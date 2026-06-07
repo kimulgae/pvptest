@@ -48,10 +48,30 @@ function loadTemplates() {
 
             img.onload = () => {
                 try {
-                    let mat = cv.imread(img);
+                    // 🔥 [해결 1] 투명 배경 버그 차단: 투명도를 무시하고 회색 배경을 깐 뒤 학습시킵니다.
+                    let canvas = document.createElement('canvas');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    let ctx = canvas.getContext('2d');
+                    ctx.fillStyle = "#1e1e2e"; // 게임 UI와 비슷한 기본 배경색
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(img, 0, 0);
+
+                    let mat = cv.imread(canvas);
                     cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
+
+                    // 🔥 까만색/단색 이미지 걸러내기 (에러 방지용)
+                    let mean = new cv.Mat();
+                    let stddev = new cv.Mat();
+                    cv.meanStdDev(mat, mean, stddev);
+                    if (stddev.data64F[0] < 5.0) {
+                        console.warn(`[경고] ${path} 이미지가 너무 어둡거나 단색입니다. 인식이 안 될 수 있습니다.`);
+                    }
+
                     templatesDB.push({ name: skill, tier: tier.val, mat: mat });
                     successCount++;
+                    
+                    mean.delete(); stddev.delete();
                 } catch(e) {
                     console.error(`[변환 에러] ${path} 실패:`, e);
                 }
@@ -116,12 +136,10 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
     const statusEl = document.getElementById(statusId);
     console.log(`[작업 시작] ${playerKey} 이미지 스캔을 시작합니다.`);
 
-    // 사진이 올라가면 무조건 기존 스킬칸 리셋 (빈칸으로 되돌리기)
     document.getElementById(playerKey + 'Skill1').value = "None";
     document.getElementById(playerKey + 'Skill2').value = "None";
     document.getElementById(playerKey + 'Skill3').value = "None";
     document.getElementById(playerKey + 'Ascension').value = "0";
-    console.log(`[초기화] ${playerKey} 스킬 슬롯 리셋 완료`);
 
     if (!cvReady || templatesDB.length === 0) {
         console.warn("[경고] 스킬 템플릿이 로드되지 않았습니다.");
@@ -133,47 +151,59 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
             const firstImg = await createImageFromBlob(files[0]);
             let src = cv.imread(firstImg);
             
-            // 🔥 범위 제한 삭제! 사진 전체(100%)를 검색하도록 수정
+            // 속도 최적화: 스크린샷의 아래쪽 60%만 스캔합니다.
+            let h = src.rows;
+            let w = src.cols;
+            let rect = new cv.Rect(0, Math.floor(h * 0.4), w, Math.floor(h * 0.6));
+            let cropped = src.roi(rect);
             let gray = new cv.Mat();
-            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+            cv.cvtColor(cropped, gray, cv.COLOR_RGBA2GRAY, 0);
 
             let detected = [];
+            // 🔥 [해결 2] 다중 스케일 매칭 (해상도가 달라도 잡아냄)
+            let scales = [0.8, 0.9, 1.0, 1.1, 1.2]; 
+
             for (let temp of templatesDB) {
-                // 템플릿 크기가 스크린샷보다 크면 에러 나므로 예외 처리
-                if (gray.rows < temp.mat.rows || gray.cols < temp.mat.cols) continue;
+                for (let scale of scales) {
+                    let dsize = new cv.Size(Math.round(temp.mat.cols * scale), Math.round(temp.mat.rows * scale));
+                    if (dsize.width <= 0 || dsize.height <= 0 || dsize.width > gray.cols || dsize.height > gray.rows) continue;
 
-                let dst = new cv.Mat();
-                let mask = new cv.Mat();
-                cv.matchTemplate(gray, temp.mat, dst, cv.TM_CCOEFF_NORMED, mask);
-                let result = cv.minMaxLoc(dst, mask);
-                
-                // 🔥 합격 기준 완화 (0.85 -> 0.78)
-                if (result.maxVal >= 0.78) {
-                    detected.push({ name: temp.name, tier: temp.tier, x: result.maxLoc.x, conf: result.maxVal });
+                    let resizedTemp = new cv.Mat();
+                    cv.resize(temp.mat, resizedTemp, dsize, 0, 0, cv.INTER_AREA);
+                    
+                    let dst = new cv.Mat();
+                    let mask = new cv.Mat();
+                    cv.matchTemplate(gray, resizedTemp, dst, cv.TM_CCOEFF_NORMED, mask);
+                    let result = cv.minMaxLoc(dst, mask);
+                    
+                    if (result.maxVal >= 0.74) { // 기준점을 더 관대하게 낮춤
+                        detected.push({ name: temp.name, tier: temp.tier, x: result.maxLoc.x, conf: result.maxVal });
+                    }
+                    dst.delete(); mask.delete(); resizedTemp.delete();
                 }
-                dst.delete(); mask.delete(); 
             }
-            src.delete(); gray.delete();
+            src.delete(); cropped.delete(); gray.delete();
 
-            // 왼쪽부터 오른쪽 순서로 나열
-            detected.sort((a, b) => a.x - b.x);
-            
+            // 🔥 [해결 3] 스마트 중복 제거 알고리즘 (가장 점수 높은 3개만 추출)
+            detected.sort((a, b) => b.conf - a.conf); // 정확도 높은 순으로 줄세우기
             let finalSkills = [];
-            if (detected.length > 0) {
-                let best = detected[0];
-                for (let i = 1; i < detected.length; i++) {
-                    // 🔥 너무 가까이 붙어 있는 포인트는 하나로 묶기 (간격 오차 50px로 넉넉하게 변경)
-                    if (Math.abs(detected[i].x - best.x) < 50) {
-                        if (detected[i].conf > best.conf) best = detected[i];
-                    } else {
-                        finalSkills.push(best);
-                        best = detected[i];
+            
+            for (let d of detected) {
+                let overlap = false;
+                for (let f of finalSkills) {
+                    if (Math.abs(d.x - f.x) < 80) { // 같은 위치에 있는 스킬은 제외 (80px 여백)
+                        overlap = true; break;
                     }
                 }
-                finalSkills.push(best);
+                if (!overlap) {
+                    finalSkills.push(d);
+                    if (finalSkills.length === 3) break; // 딱 3개만 찾으면 종료
+                }
             }
             
-            finalSkills = finalSkills.slice(0, 3); // 최대 3개까지만 가져오기
+            // 화면 왼쪽부터 순서대로 나열
+            finalSkills.sort((a, b) => a.x - b.x); 
+            
             if(finalSkills[0]) document.getElementById(playerKey + 'Skill1').value = finalSkills[0].name;
             if(finalSkills[1]) document.getElementById(playerKey + 'Skill2').value = finalSkills[1].name;
             if(finalSkills[2]) document.getElementById(playerKey + 'Skill3').value = finalSkills[2].name;
