@@ -48,37 +48,24 @@ function loadTemplates() {
 
             img.onload = () => {
                 try {
-                    // 🔥 [해결 1] 투명 배경 버그 차단: 투명도를 무시하고 회색 배경을 깐 뒤 학습시킵니다.
                     let canvas = document.createElement('canvas');
                     canvas.width = img.width;
                     canvas.height = img.height;
                     let ctx = canvas.getContext('2d');
-                    ctx.fillStyle = "#1e1e2e"; // 게임 UI와 비슷한 기본 배경색
+                    ctx.fillStyle = "#1e1e2e"; 
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
                     ctx.drawImage(img, 0, 0);
 
                     let mat = cv.imread(canvas);
                     cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
 
-                    // 🔥 까만색/단색 이미지 걸러내기 (에러 방지용)
-                    let mean = new cv.Mat();
-                    let stddev = new cv.Mat();
-                    cv.meanStdDev(mat, mean, stddev);
-                    if (stddev.data64F[0] < 5.0) {
-                        console.warn(`[경고] ${path} 이미지가 너무 어둡거나 단색입니다. 인식이 안 될 수 있습니다.`);
-                    }
-
                     templatesDB.push({ name: skill, tier: tier.val, mat: mat });
                     successCount++;
-                    
-                    mean.delete(); stddev.delete();
                 } catch(e) {
                     console.error(`[변환 에러] ${path} 실패:`, e);
                 }
             };
-            img.onerror = () => {
-                failCount++;
-            };
+            img.onerror = () => { failCount++; };
         });
     });
 
@@ -115,7 +102,7 @@ const ASCENSION_MULTIPLIERS = { 0: 1.0, 1: 49.0, 2: 2499.0, 3: 124999.0 };
 function normalizeStatName(rawName) {
     if (rawName.includes("총") || rawName.includes("대장간") || rawName.includes("레벨") || rawName.includes("도감") || rawName.includes("장착")) return null;
     if (rawName.includes("치명") || rawName.includes("지명") || rawName.includes("명타")) return (rawName.includes("피해") || rawName.includes("피애")) ? "치명타 피해" : "치명타 확률";
-    if (rawName.includes("확률") || rawName.includes("확럴") || rawName.includes("학률") || rawName.includes("블록") || rawName.includes("블럭")) return "블록 확률";
+    if (rawName.includes("확률") || rawName.includes("확럴") || rawName.includes("학률") || rawName.includes("블록") || rawName.includes("블럭") || rawName.includes("클록") || rawName.includes("플록")) return "블록 확률";
     if (rawName.includes("흡수") || rawName.includes("생명") || rawName.includes("흡슈")) return "생명력 흡수";
     if (rawName.includes("더블") || rawName.includes("떠블") || rawName.includes("찬스") || rawName.includes("단스")) return "더블 찬스";
     if (rawName.includes("속도") || rawName.includes("속토") || rawName.includes("공격")) return "공격 속도";
@@ -142,7 +129,6 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
     document.getElementById(playerKey + 'Ascension').value = "0";
 
     if (!cvReady || templatesDB.length === 0) {
-        console.warn("[경고] 스킬 템플릿이 로드되지 않았습니다.");
         statusEl.innerText = "⚠️ 스킬 자동인식 실패 (텍스트 옵션만 스캔합니다)";
     } else {
         try {
@@ -151,17 +137,12 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
             const firstImg = await createImageFromBlob(files[0]);
             let src = cv.imread(firstImg);
             
-            // 속도 최적화: 스크린샷의 아래쪽 60%만 스캔합니다.
-            let h = src.rows;
-            let w = src.cols;
-            let rect = new cv.Rect(0, Math.floor(h * 0.4), w, Math.floor(h * 0.6));
-            let cropped = src.roi(rect);
             let gray = new cv.Mat();
-            cv.cvtColor(cropped, gray, cv.COLOR_RGBA2GRAY, 0);
+            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
 
             let detected = [];
-            // 🔥 [해결 2] 다중 스케일 매칭 (해상도가 달라도 잡아냄)
-            let scales = [0.8, 0.9, 1.0, 1.1, 1.2]; 
+            // 🔥 [크기 및 인식률 패치] 0.4배 아주 작은 아이콘부터 1.2배 큰 아이콘까지 샅샅이 뒤집니다.
+            let scales = [0.4, 0.45, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2]; 
 
             for (let temp of templatesDB) {
                 for (let scale of scales) {
@@ -176,32 +157,33 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
                     cv.matchTemplate(gray, resizedTemp, dst, cv.TM_CCOEFF_NORMED, mask);
                     let result = cv.minMaxLoc(dst, mask);
                     
-                    if (result.maxVal >= 0.74) { // 기준점을 더 관대하게 낮춤
-                        detected.push({ name: temp.name, tier: temp.tier, x: result.maxLoc.x, conf: result.maxVal });
+                    // 🔥 'Lv.100'이 가리고 있어도 맞출 수 있도록 합격선 하향 (0.65점 이상이면 합격)
+                    if (result.maxVal >= 0.65) {
+                        detected.push({ name: temp.name, tier: temp.tier, x: result.maxLoc.x, y: result.maxLoc.y, conf: result.maxVal });
                     }
                     dst.delete(); mask.delete(); resizedTemp.delete();
                 }
             }
-            src.delete(); cropped.delete(); gray.delete();
+            src.delete(); gray.delete();
 
-            // 🔥 [해결 3] 스마트 중복 제거 알고리즘 (가장 점수 높은 3개만 추출)
-            detected.sort((a, b) => b.conf - a.conf); // 정확도 높은 순으로 줄세우기
+            // 정확도 높은 순 정렬 후 중복 위치 제거
+            detected.sort((a, b) => b.conf - a.conf); 
             let finalSkills = [];
             
             for (let d of detected) {
                 let overlap = false;
                 for (let f of finalSkills) {
-                    if (Math.abs(d.x - f.x) < 80) { // 같은 위치에 있는 스킬은 제외 (80px 여백)
+                    // X좌표와 Y좌표가 비슷하면 같은 위치의 스킬로 간주하고 무시
+                    if (Math.abs(d.x - f.x) < 50 && Math.abs(d.y - f.y) < 50) { 
                         overlap = true; break;
                     }
                 }
                 if (!overlap) {
                     finalSkills.push(d);
-                    if (finalSkills.length === 3) break; // 딱 3개만 찾으면 종료
+                    if (finalSkills.length === 3) break; // 최대 3개까지만
                 }
             }
             
-            // 화면 왼쪽부터 순서대로 나열
             finalSkills.sort((a, b) => a.x - b.x); 
             
             if(finalSkills[0]) document.getElementById(playerKey + 'Skill1').value = finalSkills[0].name;
@@ -224,9 +206,22 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
         for (let i = 0; i < files.length; i++) {
             statusEl.innerText = `⏳ ${i + 1}/${files.length}번째 이미지 텍스트 옵션 스캔 중...`;
             
-            const imgUrl = URL.createObjectURL(files[i]);
-            const { data: { text } } = await Tesseract.recognize(imgUrl, 'kor+eng');
-            URL.revokeObjectURL(imgUrl); 
+            const imgForOcr = await createImageFromBlob(files[i]);
+            
+            // 🔥 [대비 뻥튀기 필터] 하얀 배경의 회색 글씨를 읽기 위해 캔버스로 화질을 강화합니다.
+            const canvas = document.createElement('canvas');
+            canvas.width = imgForOcr.width * 1.5; // 크기 1.5배 확대
+            canvas.height = imgForOcr.height * 1.5;
+            const ctx = canvas.getContext('2d');
+            ctx.filter = 'contrast(1.5) grayscale(1)'; // 흑백 변환 후 대비 증폭
+            ctx.drawImage(imgForOcr, 0, 0, canvas.width, canvas.height);
+            
+            const processedUrl = canvas.toDataURL('image/jpeg', 1.0);
+
+            const { data: { text } } = await Tesseract.recognize(processedUrl, 'kor+eng');
+            
+            // 💡 문제 발생 시 콘솔창(F12)에서 AI가 글자를 어떻게 읽었는지 확인할 수 있습니다.
+            console.log(`[OCR 원본 텍스트 - 파일 ${i+1}]\n`, text);
 
             const cleanText = text.replace(/\s+/g, '');
             const regex = /([+-]?)(\d+[\.,]?\d*)[^a-zA-Z가-힣0-9]*([a-zA-Z가-힣]+)/g;
