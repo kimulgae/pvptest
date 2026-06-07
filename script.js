@@ -2,7 +2,6 @@ const parsedData = { my: { stats: {} }, enemy: { stats: {} } };
 let cvReady = false;
 let templatesDB = []; 
 
-// 1. 초기 스킬 목록 세팅
 const SKILL_NAMES = ["Meat", "Arrows", "Shout", "Berserk", "Cannon", "Shuriken", "Buff", "ArrowRains", "Thorns", "Bomb", "Meteorite", "Morale", "Lightning", "Stampede", "Worm", "Drone", "HigherMorale", "StrafeRun"];
 const TIERS = [
     { folder: "apex", prefix: "Apex_", val: "Apex" },
@@ -19,18 +18,15 @@ window.onload = () => {
     });
 };
 
-// 2. OpenCV 완벽 부팅 대기 및 로딩 (에러 원천 차단)
 window.onOpenCvReady = function() {
     checkOpenCvReady();
 };
 
 function checkOpenCvReady() {
-    // cv.Mat 함수가 진짜로 생성될 때까지(엔진 부팅 완료) 0.2초마다 재확인
     if (typeof cv !== 'undefined' && typeof cv.Mat === 'function') {
         console.log("[시스템] OpenCV 내부 코어 완벽 부팅 확인!");
         loadTemplates();
     } else {
-        console.log("⏳ OpenCV 엔진 부팅 중...");
         setTimeout(checkOpenCvReady, 200); 
     }
 }
@@ -66,7 +62,6 @@ function loadTemplates() {
         });
     });
 
-    // 학습 완료 최종 보고
     setTimeout(() => {
         if (templatesDB.length > 0) {
             statusEl.innerText = `✅ AI 엔진 장전 완료! (학습 완료: ${successCount}개)`;
@@ -114,7 +109,6 @@ function normalizeStatName(rawName) {
     return null;
 }
 
-// 3. 사진 처리 엔진 (스킬 초기화 로직 추가)
 async function processImages(fileInputId, statusId, listId, playerKey) {
     const files = document.getElementById(fileInputId).files;
     if (files.length === 0) return;
@@ -122,7 +116,7 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
     const statusEl = document.getElementById(statusId);
     console.log(`[작업 시작] ${playerKey} 이미지 스캔을 시작합니다.`);
 
-    // 🔥 [수정됨] 스크린샷 올릴 때마다 기존 스킬과 승천 단계 싹 지우기 (리셋)
+    // 사진이 올라가면 무조건 기존 스킬칸 리셋 (빈칸으로 되돌리기)
     document.getElementById(playerKey + 'Skill1').value = "None";
     document.getElementById(playerKey + 'Skill2').value = "None";
     document.getElementById(playerKey + 'Skill3').value = "None";
@@ -130,43 +124,46 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
     console.log(`[초기화] ${playerKey} 스킬 슬롯 리셋 완료`);
 
     if (!cvReady || templatesDB.length === 0) {
-        console.warn("[경고] 스킬 템플릿(아이콘)이 로드되지 않아 스킬 자동인식은 건너뜁니다.");
+        console.warn("[경고] 스킬 템플릿이 로드되지 않았습니다.");
         statusEl.innerText = "⚠️ 스킬 자동인식 실패 (텍스트 옵션만 스캔합니다)";
     } else {
         try {
             statusEl.innerText = `⏳ AI가 장착 스킬을 탐색하고 있습니다...`;
-            console.log("[진행] 스킬 이미지 분석 중...");
-
+            
             const firstImg = await createImageFromBlob(files[0]);
             let src = cv.imread(firstImg);
-            let h = src.rows;
-            let w = src.cols;
             
-            let rect = new cv.Rect(0, Math.floor(h * 0.70), w, Math.floor(h * 0.20));
-            let cropped = src.roi(rect);
+            // 🔥 범위 제한 삭제! 사진 전체(100%)를 검색하도록 수정
             let gray = new cv.Mat();
-            cv.cvtColor(cropped, gray, cv.COLOR_RGBA2GRAY, 0);
+            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
 
             let detected = [];
             for (let temp of templatesDB) {
+                // 템플릿 크기가 스크린샷보다 크면 에러 나므로 예외 처리
+                if (gray.rows < temp.mat.rows || gray.cols < temp.mat.cols) continue;
+
                 let dst = new cv.Mat();
                 let mask = new cv.Mat();
                 cv.matchTemplate(gray, temp.mat, dst, cv.TM_CCOEFF_NORMED, mask);
                 let result = cv.minMaxLoc(dst, mask);
                 
-                if (result.maxVal >= 0.85) {
+                // 🔥 합격 기준 완화 (0.85 -> 0.78)
+                if (result.maxVal >= 0.78) {
                     detected.push({ name: temp.name, tier: temp.tier, x: result.maxLoc.x, conf: result.maxVal });
                 }
                 dst.delete(); mask.delete(); 
             }
-            src.delete(); cropped.delete(); gray.delete();
+            src.delete(); gray.delete();
 
+            // 왼쪽부터 오른쪽 순서로 나열
             detected.sort((a, b) => a.x - b.x);
+            
             let finalSkills = [];
             if (detected.length > 0) {
                 let best = detected[0];
                 for (let i = 1; i < detected.length; i++) {
-                    if (Math.abs(detected[i].x - best.x) < 30) {
+                    // 🔥 너무 가까이 붙어 있는 포인트는 하나로 묶기 (간격 오차 50px로 넉넉하게 변경)
+                    if (Math.abs(detected[i].x - best.x) < 50) {
                         if (detected[i].conf > best.conf) best = detected[i];
                     } else {
                         finalSkills.push(best);
@@ -176,8 +173,7 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
                 finalSkills.push(best);
             }
             
-            finalSkills = finalSkills.slice(0, 3);
-            // 🔥 AI가 찾은 스킬을 3개의 드롭다운 칸에 '자동으로' 선택해줌
+            finalSkills = finalSkills.slice(0, 3); // 최대 3개까지만 가져오기
             if(finalSkills[0]) document.getElementById(playerKey + 'Skill1').value = finalSkills[0].name;
             if(finalSkills[1]) document.getElementById(playerKey + 'Skill2').value = finalSkills[1].name;
             if(finalSkills[2]) document.getElementById(playerKey + 'Skill3').value = finalSkills[2].name;
@@ -186,7 +182,7 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
             if(tiers.includes("Apex")) document.getElementById(playerKey + 'Ascension').value = "3";
             else if(tiers.includes("Mega")) document.getElementById(playerKey + 'Ascension').value = "1";
             
-            console.log(`[성공] 발견된 스킬:`, finalSkills);
+            console.log(`[성공] 발견된 스킬 (${finalSkills.length}개):`, finalSkills);
 
         } catch (e) { 
             console.error("[치명적 에러] 스킬 분석 중 에러 발생:", e);
