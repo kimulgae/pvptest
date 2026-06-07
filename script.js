@@ -123,88 +123,71 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
     if (files.length === 0) return;
     
     const statusEl = document.getElementById(statusId);
-    console.log(`[작업 시작] ${playerKey} 이미지 스캔을 시작합니다.`);
-
+    
+    // 리셋 로직
     document.getElementById(playerKey + 'Skill1').value = "None";
     document.getElementById(playerKey + 'Skill2').value = "None";
     document.getElementById(playerKey + 'Skill3').value = "None";
     document.getElementById(playerKey + 'Ascension').value = "0";
 
     if (!cvReady || templatesDB.length === 0) {
-        statusEl.innerText = "⚠️ 스킬 자동인식 실패 (텍스트 옵션만 스캔합니다)";
+        statusEl.innerText = "⚠️ AI 엔진 미준비 (텍스트 옵션만 스캔합니다)";
     } else {
         try {
-            statusEl.innerText = `⏳ AI가 장착 스킬을 탐색하고 있습니다...`;
+            statusEl.innerText = `⏳ AI가 스킬을 정밀 분석 중...`;
             
             const firstImg = await createImageFromBlob(files[0]);
             let src = cv.imread(firstImg);
-            
-            let h = src.rows;
-            let w = src.cols;
-            let rect = new cv.Rect(0, Math.floor(h * 0.4), w, Math.floor(h * 0.6));
-            let cropped = src.roi(rect);
             let gray = new cv.Mat();
-            cv.cvtColor(cropped, gray, cv.COLOR_RGBA2GRAY, 0);
+            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
 
             let detected = [];
-            // 크기 스케일 세분화 (작은 아이콘부터 큰 아이콘까지)
-            let scales = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1]; 
+            // 🔥 [수정] 합격 기준을 0.70으로 더 대폭 완화하여 약간의 이미지 차이도 수용
+            const THRESHOLD = 0.70; 
 
             for (let temp of templatesDB) {
-                for (let scale of scales) {
-                    let dsize = new cv.Size(Math.round(temp.mat.cols * scale), Math.round(temp.mat.rows * scale));
-                    if (dsize.width <= 0 || dsize.height <= 0 || dsize.width > gray.cols || dsize.height > gray.rows) continue;
-
-                    let resizedTemp = new cv.Mat();
-                    cv.resize(temp.mat, resizedTemp, dsize, 0, 0, cv.INTER_AREA);
-                    
-                    let dst = new cv.Mat();
-                    let mask = new cv.Mat();
-                    cv.matchTemplate(gray, resizedTemp, dst, cv.TM_CCOEFF_NORMED, mask);
-                    let result = cv.minMaxLoc(dst, mask);
-                    
-                    // 합격선 0.65로 하향 (장애물이 있어도 인식)
-                    if (result.maxVal >= 0.65) {
-                        detected.push({ name: temp.name, tier: temp.tier, x: result.maxLoc.x, y: result.maxLoc.y, conf: result.maxVal });
+                let dst = new cv.Mat();
+                let mask = new cv.Mat();
+                
+                // 템플릿 매칭 수행
+                cv.matchTemplate(gray, temp.mat, dst, cv.TM_CCOEFF_NORMED, mask);
+                
+                // 🔥 [수정] 여러 위치에서 발견될 수 있도록 최댓값 위치를 반복 탐색
+                for (let y = 0; y < dst.rows; y++) {
+                    for (let x = 0; x < dst.cols; x++) {
+                        let val = dst.floatPtr(y, x)[0];
+                        if (val >= THRESHOLD) {
+                            detected.push({ name: temp.name, tier: temp.tier, x: x, y: y, conf: val });
+                        }
                     }
-                    dst.delete(); mask.delete(); resizedTemp.delete();
                 }
+                dst.delete(); mask.delete();
             }
-            src.delete(); cropped.delete(); gray.delete();
+            src.delete(); gray.delete();
 
-            detected.sort((a, b) => b.conf - a.conf); 
+            // 🔥 [수정] 중복 인식된 스킬들을 정리 (점수 높은 순으로 3개만)
+            detected.sort((a, b) => b.conf - a.conf);
             let finalSkills = [];
-            
             for (let d of detected) {
-                let overlap = false;
-                for (let f of finalSkills) {
-                    if (Math.abs(d.x - f.x) < 50 && Math.abs(d.y - f.y) < 50) { 
-                        overlap = true; break;
-                    }
-                }
-                if (!overlap) {
+                if (!finalSkills.some(f => Math.abs(f.x - d.x) < 40 && Math.abs(f.y - d.y) < 40)) {
                     finalSkills.push(d);
-                    if (finalSkills.length === 3) break; // 슬롯이 3개이므로 가장 정확한 3개만 추출
+                    if (finalSkills.length === 3) break;
                 }
             }
             
+            // X좌표 기준으로 왼쪽부터 순서대로 배치
             finalSkills.sort((a, b) => a.x - b.x); 
             
             if(finalSkills[0]) document.getElementById(playerKey + 'Skill1').value = finalSkills[0].name;
             if(finalSkills[1]) document.getElementById(playerKey + 'Skill2').value = finalSkills[1].name;
             if(finalSkills[2]) document.getElementById(playerKey + 'Skill3').value = finalSkills[2].name;
 
-            const tiers = finalSkills.map(s => s.tier);
-            if(tiers.includes("Apex")) document.getElementById(playerKey + 'Ascension').value = "3";
-            else if(tiers.includes("Mega")) document.getElementById(playerKey + 'Ascension').value = "1";
-            
-            console.log(`[성공] 발견된 스킬 (${finalSkills.length}개):`, finalSkills);
+            console.log(`[성공] 최종 인식된 스킬:`, finalSkills);
 
         } catch (e) { 
-            console.error("[치명적 에러] 스킬 분석 중 에러 발생:", e);
+            console.error("[스킬 분석 에러]:", e);
         }
     }
-
     parsedData[playerKey].stats = {}; 
     try {
         for (let i = 0; i < files.length; i++) {
