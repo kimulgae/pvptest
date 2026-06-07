@@ -19,21 +19,34 @@ window.onload = () => {
     });
 };
 
-// 2. OpenCV 로딩 및 로그 남기기 (에러 추적기 탑재)
+// 2. OpenCV 완벽 부팅 대기 및 로딩 (에러 원천 차단)
 window.onOpenCvReady = function() {
+    checkOpenCvReady();
+};
+
+function checkOpenCvReady() {
+    // cv.Mat 함수가 진짜로 생성될 때까지(엔진 부팅 완료) 0.2초마다 재확인
+    if (typeof cv !== 'undefined' && typeof cv.Mat === 'function') {
+        console.log("[시스템] OpenCV 내부 코어 완벽 부팅 확인!");
+        loadTemplates();
+    } else {
+        console.log("⏳ OpenCV 엔진 부팅 중...");
+        setTimeout(checkOpenCvReady, 200); 
+    }
+}
+
+function loadTemplates() {
     cvReady = true;
     const statusEl = document.getElementById('ai-status');
-    statusEl.innerText = "⏳ OpenCV 코어 로드 완료! 스킬 아이콘을 가져오는 중...";
-    console.log("[시스템] OpenCV.js 로딩 완료");
-
+    statusEl.innerText = "⏳ AI 엔진 부팅 완료! 스킬 아이콘을 학습하는 중...";
+    
     let successCount = 0;
     let failCount = 0;
-    let expectedCount = SKILL_NAMES.length * TIERS.length; // 54개
 
     TIERS.forEach(tier => {
         SKILL_NAMES.forEach(skill => {
             let img = new Image();
-            img.crossOrigin = "Anonymous"; // 보안 에러 방지
+            img.crossOrigin = "Anonymous"; 
             let path = `templates/${tier.folder}/${tier.prefix}${skill}.png`;
             img.src = path;
 
@@ -44,29 +57,24 @@ window.onOpenCvReady = function() {
                     templatesDB.push({ name: skill, tier: tier.val, mat: mat });
                     successCount++;
                 } catch(e) {
-                    console.error(`[변환 에러] ${path} 변환 실패:`, e);
+                    console.error(`[변환 에러] ${path} 실패:`, e);
                 }
             };
             img.onerror = () => {
                 failCount++;
-                console.warn(`[파일 없음 404] 경로를 찾을 수 없습니다: ${path} (대소문자 및 확장자를 확인하세요)`);
             };
         });
     });
 
-    // 2초 뒤에 최종 상태 화면에 출력
+    // 학습 완료 최종 보고
     setTimeout(() => {
         if (templatesDB.length > 0) {
-            statusEl.innerText = `✅ AI 엔진 장전 완료! (성공: ${templatesDB.length}개 / 실패: ${failCount}개)`;
+            statusEl.innerText = `✅ AI 엔진 장전 완료! (학습 완료: ${successCount}개)`;
             statusEl.style.color = "#4ade80";
-        } else {
-            statusEl.innerText = `❌ 치명적 에러: 스킬 아이콘을 한 개도 찾지 못했습니다! (F12를 눌러 로그를 확인하세요)`;
-            statusEl.style.color = "#ff4b4b";
         }
-    }, 2000);
-};
+    }, 2000); 
+}
 
-// 스킬 DB 및 승천 데이터 (기존과 동일)
 const SKILL_DB = {
     "Meat": { type: "buff", dmgBonus: 0, hpBonus: 0.0001, duration: 10, count: 7.5 },
     "Arrows": { type: "dmg", power: 0.0002, cooldown: 7, count: 8.57 },
@@ -106,7 +114,7 @@ function normalizeStatName(rawName) {
     return null;
 }
 
-// 3. 사진 처리 엔진 (로그 추가 및 강제 진행)
+// 3. 사진 처리 엔진 (스킬 초기화 로직 추가)
 async function processImages(fileInputId, statusId, listId, playerKey) {
     const files = document.getElementById(fileInputId).files;
     if (files.length === 0) return;
@@ -114,7 +122,13 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
     const statusEl = document.getElementById(statusId);
     console.log(`[작업 시작] ${playerKey} 이미지 스캔을 시작합니다.`);
 
-    // 오류로 멈추지 않고, 에러 상황에서도 텍스트 스캔(Tesseract)은 진행되도록 수정
+    // 🔥 [수정됨] 스크린샷 올릴 때마다 기존 스킬과 승천 단계 싹 지우기 (리셋)
+    document.getElementById(playerKey + 'Skill1').value = "None";
+    document.getElementById(playerKey + 'Skill2').value = "None";
+    document.getElementById(playerKey + 'Skill3').value = "None";
+    document.getElementById(playerKey + 'Ascension').value = "0";
+    console.log(`[초기화] ${playerKey} 스킬 슬롯 리셋 완료`);
+
     if (!cvReady || templatesDB.length === 0) {
         console.warn("[경고] 스킬 템플릿(아이콘)이 로드되지 않아 스킬 자동인식은 건너뜁니다.");
         statusEl.innerText = "⚠️ 스킬 자동인식 실패 (텍스트 옵션만 스캔합니다)";
@@ -163,6 +177,7 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
             }
             
             finalSkills = finalSkills.slice(0, 3);
+            // 🔥 AI가 찾은 스킬을 3개의 드롭다운 칸에 '자동으로' 선택해줌
             if(finalSkills[0]) document.getElementById(playerKey + 'Skill1').value = finalSkills[0].name;
             if(finalSkills[1]) document.getElementById(playerKey + 'Skill2').value = finalSkills[1].name;
             if(finalSkills[2]) document.getElementById(playerKey + 'Skill3').value = finalSkills[2].name;
@@ -175,23 +190,17 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
 
         } catch (e) { 
             console.error("[치명적 에러] 스킬 분석 중 에러 발생:", e);
-            statusEl.innerText = `❌ 스킬 분석 에러: ${e.message}`;
-            statusEl.style.color = "#ff4b4b";
         }
     }
 
-    // 텍스트 스캔 (Tesseract)은 무조건 진행
     parsedData[playerKey].stats = {}; 
     try {
         for (let i = 0; i < files.length; i++) {
             statusEl.innerText = `⏳ ${i + 1}/${files.length}번째 이미지 텍스트 옵션 스캔 중...`;
-            console.log(`[진행] Tesseract 스캔 시작: ${i+1}번째 파일`);
             
             const imgUrl = URL.createObjectURL(files[i]);
             const { data: { text } } = await Tesseract.recognize(imgUrl, 'kor+eng');
             URL.revokeObjectURL(imgUrl); 
-
-            console.log(`[원본 텍스트]`, text);
 
             const cleanText = text.replace(/\s+/g, '');
             const regex = /([+-]?)(\d+[\.,]?\d*)[^a-zA-Z가-힣0-9]*([a-zA-Z가-힣]+)/g;
@@ -203,10 +212,7 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
                 if (Math.abs(value) > 30000) continue;
 
                 const statName = normalizeStatName(match[3]);
-                if (statName) {
-                    parsedData[playerKey].stats[statName] = value;
-                    console.log(`[옵션 인식 성공] ${statName}: ${value}`);
-                }
+                if (statName) parsedData[playerKey].stats[statName] = value;
             }
         }
         
@@ -215,9 +221,7 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
         statusEl.style.color = "#4ade80";
 
     } catch (e) {
-        console.error("[치명적 에러] Tesseract 텍스트 스캔 중 에러:", e);
-        statusEl.innerText = `❌ 텍스트 분석 에러: ${e.message}`;
-        statusEl.style.color = "#ff4b4b";
+        console.error("[치명적 에러] Tesseract 스캔 중 에러:", e);
     }
 }
 
@@ -261,9 +265,6 @@ document.getElementById('calcBtn').addEventListener('click', () => {
         multi *= (1 + getS("체력")); 
         multi *= (1 + getS("공격 속도"));
         multi *= (1 + getS("더블 찬스"));
-        
-        // 회계 수식 보정(자본 과소)
-        // 2번은 자본 1500 과소라 되어 있어: 게임 로직상 무관하지만 기존 수정 이력 존중
         
         multi *= (1 + (getS("치명타 확률") * (0.2 + getS("치명타 피해"))));
 
