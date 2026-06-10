@@ -52,19 +52,19 @@ function loadTemplates() {
                     canvas.width = img.width;
                     canvas.height = img.height;
                     let ctx = canvas.getContext('2d');
-                    
-                    // 배경을 하얗게 채워 대비를 높임 (다시 복구)
-                    ctx.fillStyle = "#ffffff"; 
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
                     ctx.drawImage(img, 0, 0);
 
                     let mat = cv.imread(canvas);
                     let gray = new cv.Mat();
                     cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY, 0);
 
-                    templatesDB.push({ name: skill, tier: tier.val, mat: gray });
+                    // 🔥 [핵심] 배경색을 무시하기 위해 템플릿의 윤곽선(Edge)만 추출하여 저장
+                    let edges = new cv.Mat();
+                    cv.Canny(gray, edges, 50, 150, 3, false);
+
+                    templatesDB.push({ name: skill, tier: tier.val, mat: edges });
                     
-                    mat.delete();
+                    mat.delete(); gray.delete();
                     successCount++;
                 } catch(e) {
                     console.error(`[변환 에러] ${path} 실패:`, e);
@@ -147,12 +147,12 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
 
     try {
         // ==========================
-        // 1. 고속 스킬 아이콘 매칭 (OpenCV)
+        // 1. 고속 스킬 아이콘 매칭 (OpenCV 윤곽선 매칭)
         // ==========================
         const firstImg = await createImageFromBlob(files[0]);
         let src = cv.imread(firstImg);
         
-        // 장비창을 제외하고 스킬과 펫이 위치한 황금 구역(55% ~ 72%)만 정밀 크롭
+        // 스킬과 펫이 위치한 구역(55% ~ 72%) 크롭
         let cropY_start = Math.floor(src.rows * 0.55);
         let cropHeight = Math.floor(src.rows * 0.17);
         let rect = new cv.Rect(0, cropY_start, src.cols, cropHeight);
@@ -161,37 +161,41 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
         let gray = new cv.Mat();
         cv.cvtColor(croppedSrc, gray, cv.COLOR_RGBA2GRAY, 0);
 
+        // 🔥 [핵심] 원본 이미지도 윤곽선으로 변환 (배경색 영향 0%)
+        let targetEdges = new cv.Mat();
+        cv.Canny(gray, targetEdges, 50, 150, 3, false);
+
         let detected = [];
-        const THRESHOLD = 0.65; 
-        const scales = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2]; // 스케일 스펙트럼 확장
+        const THRESHOLD = 0.40; // 윤곽선 매칭 특성상 기준치를 0.40으로 조정할 때 가장 정확합니다.
+        const scales = [0.8, 0.9, 1.0, 1.1, 1.2]; 
 
         for (let scale of scales) {
-            let scaledGray = new cv.Mat();
-            let newSize = new cv.Size(Math.floor(gray.cols * scale), Math.floor(gray.rows * scale));
-            cv.resize(gray, scaledGray, newSize, 0, 0, cv.INTER_LINEAR);
+            let scaledEdges = new cv.Mat();
+            let newSize = new cv.Size(Math.floor(targetEdges.cols * scale), Math.floor(targetEdges.rows * scale));
+            cv.resize(targetEdges, scaledEdges, newSize, 0, 0, cv.INTER_LINEAR);
 
             for (let temp of templatesDB) {
-                if (temp.mat.rows > scaledGray.rows || temp.mat.cols > scaledGray.cols) continue;
+                if (temp.mat.rows > scaledEdges.rows || temp.mat.cols > scaledEdges.cols) continue;
 
                 let dst = new cv.Mat();
                 let mask = new cv.Mat();
-                cv.matchTemplate(scaledGray, temp.mat, dst, cv.TM_CCOEFF_NORMED, mask);
+                cv.matchTemplate(scaledEdges, temp.mat, dst, cv.TM_CCOEFF_NORMED, mask);
                 
-                // 🔥 [대폭 개선] 대량의 픽셀 루프 대신 고속 minMaxLoc 순회 알고리즘 적용
                 for (let m = 0; m < 3; m++) {
                     let minMax = cv.minMaxLoc(dst);
                     if (minMax.maxVal >= THRESHOLD) {
                         let originalX = Math.floor(minMax.maxLoc.x / scale);
-                        // 화면 우측의 펫(가로 52% 이후 영역)은 스킬칸이 아니므로 원천 배제
-                        if (originalX < src.cols * 0.52) {
+                        
+                        // 화면 우측의 펫(가로 50% 이후 영역) 제거 필터링
+                        if (originalX < src.cols * 0.50) {
                             detected.push({ name: temp.name, x: originalX, conf: minMax.maxVal });
                         }
                         
-                        // 이미 찾은 피크 주변을 지워 중복 검출 방지
-                        let startX = Math.max(0, minMax.maxLoc.x - temp.mat.cols / 2);
-                        let startY = Math.max(0, minMax.maxLoc.y - temp.mat.rows / 2);
-                        let w = Math.min(dst.cols - startX, temp.mat.cols);
-                        let h = Math.min(dst.rows - startY, temp.mat.rows);
+                        // 탐색 완료된 위치 지우기 (인식 지점 마스킹 지름 확대)
+                        let startX = Math.max(0, minMax.maxLoc.x - 15);
+                        let startY = Math.max(0, minMax.maxLoc.y - 15);
+                        let w = Math.min(dst.cols - startX, temp.mat.cols + 30);
+                        let h = Math.min(dst.rows - startY, temp.mat.rows + 30);
                         let eraseRect = new cv.Rect(startX, startY, w, h);
                         let roi = dst.roi(eraseRect);
                         roi.setTo(new cv.Scalar(0));
@@ -202,16 +206,16 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
                 }
                 dst.delete(); mask.delete();
             }
-            scaledGray.delete();
+            scaledEdges.delete();
         }
-        src.delete(); croppedSrc.delete(); gray.delete();
+        src.delete(); croppedSrc.delete(); gray.delete(); targetEdges.delete();
 
-        // X좌표 기준 근접 영역 클러스터링
+        // X좌표 기준 중복 제거
         let slots = [];
         for (let d of detected) {
             let addedToSlot = false;
             for (let s of slots) {
-                if (Math.abs(s.x - d.x) < 45) { 
+                if (Math.abs(s.x - d.x) < 50) { 
                     if (d.conf > s.conf) {
                         s.name = d.name;
                         s.conf = d.conf;
@@ -225,51 +229,55 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
             }
         }
 
-        // 왼쪽부터 순서대로 정렬 후 상위 3개 자동 선택
         slots.sort((a, b) => a.x - b.x);
         let finalSkills = slots.slice(0, 3);
         
         if(finalSkills[0]) document.getElementById(playerKey + 'Skill1').value = finalSkills[0].name;
         if(finalSkills[1]) document.getElementById(playerKey + 'Skill2').value = finalSkills[1].name;
         if(finalSkills[2]) document.getElementById(playerKey + 'Skill3').value = finalSkills[2].name;
-        console.log(`[오픈CV 성공] 추출된 스킬 목록:`, finalSkills);
 
         // ==========================
-        // 2. 텍스트 옵션 읽기 (OCR)
+        // 2. 텍스트 옵션 읽기 (OpenCV 이진화 처리 적용)
         // ==========================
         parsedData[playerKey].stats = {}; 
         for (let i = 0; i < files.length; i++) {
-            const imgForOcr = await createImageFromBlob(files[i]);
-            const canvas = document.createElement('canvas');
+            let ocrSrc = cv.imread(await createImageFromBlob(files[i]));
             
-            // 스킬칸 바로 아래부터 화면 하단 버튼 전(66% ~ 90%)까지 오려내기
-            const startY = imgForOcr.height * 0.66; 
-            const cropHeightForOcr = imgForOcr.height * 0.24; 
+            // 옵션 글씨가 위치한 영역 크롭 (66% ~ 90%)
+            let startY = Math.floor(ocrSrc.rows * 0.66);
+            let cropHeightForOcr = Math.floor(ocrSrc.rows * 0.24);
+            let ocrRect = new cv.Rect(0, startY, ocrSrc.cols, cropHeightForOcr);
+            let ocrCropped = ocrSrc.roi(ocrRect);
             
-            canvas.width = imgForOcr.width * 1.5; 
-            canvas.height = cropHeightForOcr * 1.5;
-            const ctx = canvas.getContext('2d');
+            let ocrGray = new cv.Mat();
+            cv.cvtColor(ocrCropped, ocrGray, cv.COLOR_RGBA2GRAY, 0);
             
-            ctx.filter = 'grayscale(1) contrast(1.2)'; 
-            ctx.drawImage(imgForOcr, 0, startY, imgForOcr.width, cropHeightForOcr, 0, 0, canvas.width, canvas.height);
+            // 🔥 [핵심] OpenCV Otsu 알고리즘으로 회색 글씨를 선명한 흑백 글씨로 강제 교정
+            let ocrThresh = new cv.Mat();
+            cv.threshold(ocrGray, ocrThresh, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
             
-            const processedUrl = canvas.toDataURL('image/jpeg', 1.0);
-            const { data: { text } } = await Tesseract.recognize(processedUrl, 'kor+eng');
-            console.log(`[OCR 내부 원본 수집]:\n`, text);
+            let ocrCanvas = document.createElement('canvas');
+            cv.imshow(ocrCanvas, ocrThresh);
+            const processedUrl = ocrCanvas.toDataURL('image/jpeg', 1.0);
+            
+            // 메모리 해제
+            ocrSrc.delete(); ocrCropped.delete(); ocrGray.delete(); ocrThresh.delete();
 
-            // 🔥 [대폭 개선] 오작동이 심한 연쇄 정규식 대신 줄바꿈 단위 키워드 분석법 도입
+            const { data: { text } } = await Tesseract.recognize(processedUrl, 'kor+eng');
+            console.log(`[OCR 보정본 텍스트]:\n`, text);
+
             const lines = text.split('\n');
             for (let line of lines) {
                 let cleanLine = line.replace(/\s+/g, '');
                 
-                // 줄 내부에 포함된 숫자 부동소수점 매칭
                 let numMatch = cleanLine.match(/([+-]?\d+[\.,]?\d*)/);
                 if (!numMatch) continue;
                 let value = parseFloat(numMatch[1].replace(',', '.'));
                 
                 let statName = null;
-                // OCR 오타(클록, 왁률, 옵수 등) 방어 코드 탑재 완료
-                if (cleanLine.includes("치명") || cleanLine.includes("지명") || cleanLine.includes("명타")) {
+                if (cleanLine.includes("대기") || cleanLine.includes("재사용") || cleanLine.includes("시간")) {
+                    statName = "스킬 재사용 대기시간";
+                } else if (cleanLine.includes("치명") || cleanLine.includes("지명") || cleanLine.includes("명타")) {
                     statName = (cleanLine.includes("피해") || cleanLine.includes("피애") || cleanLine.includes("파해")) ? "치명타 피해" : "치명타 확률";
                 } else if (cleanLine.includes("블록") || cleanLine.includes("블럭") || cleanLine.includes("클록") || cleanLine.includes("플록") || cleanLine.includes("확률") || cleanLine.includes("왁률") || cleanLine.includes("학률")) {
                     statName = "블록 확률";
@@ -279,14 +287,14 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
                     statName = "더블 찬스";
                 } else if (cleanLine.includes("속도") || cleanLine.includes("공격") || cleanLine.includes("격속")) {
                     statName = "공격 속도";
-                } else if (cleanLine.includes("대기") || cleanLine.includes("재사용") || cleanLine.includes("시간")) {
-                    statName = "스킬 재사용 대기시간";
                 } else if (cleanLine.includes("근접") || cleanLine.includes("건접")) {
                     statName = "근접 피해";
                 } else if (cleanLine.includes("원거리")) {
                     statName = "원거리 피해";
                 } else if (cleanLine.includes("스킬") || cleanLine.includes("스길")) {
                     statName = "스킬 피해";
+                } else if (cleanLine.includes("재생") || cleanLine.includes("제생")) { // 🔥 체력보다 무조건 먼저 검사하도록 순서 정렬
+                    statName = "체력 재생";
                 } else if (cleanLine.includes("체력") || cleanLine.includes("채력") || cleanLine.includes("최력")) {
                     statName = "체력";
                 } else if (cleanLine.includes("피해") || cleanLine.includes("피애") || cleanLine.includes("파해")) {
@@ -301,7 +309,7 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
         
         renderOptionList(parsedData[playerKey].stats, listId);
         
-        // 타이머 정지 및 마감
+        // 타이머 정지 및 완료
         clearInterval(timerInterval);
         let totalSec = Math.floor((Date.now() - startTime) / 1000);
         statusEl.innerText = `✅ 스캔 완료! (${totalSec}초 소요)`;
@@ -309,8 +317,8 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
 
     } catch (e) {
         clearInterval(timerInterval);
-        console.error("[인식 엔진 치명적 에러]:", e);
-        statusEl.innerText = "❌ 스캔 오류 발생. 대상을 다시 확인해 주세요.";
+        console.error("[인식 엔진 에러]:", e);
+        statusEl.innerText = "❌ 스캔 중 오류가 발생했습니다.";
         statusEl.style.color = "#ff4b4b";
     }
 }
