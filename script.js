@@ -53,20 +53,18 @@ function loadTemplates() {
                     canvas.height = img.height;
                     let ctx = canvas.getContext('2d');
                     
-                    // 배경 채색 없이 그대로 그림
+                    // 배경을 하얗게 채워 대비를 높임 (다시 복구)
+                    ctx.fillStyle = "#ffffff"; 
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
                     ctx.drawImage(img, 0, 0);
 
                     let mat = cv.imread(canvas);
                     let gray = new cv.Mat();
                     cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY, 0);
-                    
-                    // 🔥 [핵심 개선] Canny Edge 알고리즘으로 윤곽선만 추출!
-                    let edges = new cv.Mat();
-                    cv.Canny(gray, edges, 50, 150, 3, false);
 
-                    templatesDB.push({ name: skill, tier: tier.val, mat: edges }); // edges 매트릭스 저장
+                    templatesDB.push({ name: skill, tier: tier.val, mat: gray });
                     
-                    mat.delete(); gray.delete();
+                    mat.delete();
                     successCount++;
                 } catch(e) {
                     console.error(`[변환 에러] ${path} 실패:`, e);
@@ -133,149 +131,160 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
     document.getElementById(playerKey + 'Skill2').value = "None";
     document.getElementById(playerKey + 'Skill3').value = "None";
     document.getElementById(playerKey + 'Ascension').value = "0";
+    document.getElementById(listId).innerHTML = ""; // 기존 옵션 텍스트 지우기
 
     if (!cvReady || templatesDB.length === 0) {
         statusEl.innerText = "⚠️ AI 엔진 미준비 (텍스트 옵션만 스캔합니다)";
-    } else {
-        try {
-            statusEl.innerText = `⏳ AI가 스킬을 정밀 분석 중...`;
-            
-            const firstImg = await createImageFromBlob(files[0]);
-            let src = cv.imread(firstImg);
-            let gray = new cv.Mat();
-            cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+        return;
+    }
 
-            let detected = [];
-            // 🔥 [수정] 합격 기준을 0.70으로 더 대폭 완화하여 약간의 이미지 차이도 수용
-            const THRESHOLD = 0.70; 
+    // ⏱️ 초 단위 타이머 시작
+    let startTime = Date.now();
+    let timerInterval = setInterval(() => {
+        let sec = Math.floor((Date.now() - startTime) / 1000);
+        statusEl.innerText = `⏳ AI가 이미지를 분석하고 있습니다... (${sec}초 경과)`;
+    }, 1000);
+
+    try {
+       // ==========================
+        // 1. 스킬 아이콘 매칭 (OpenCV)
+        // ==========================
+        const firstImg = await createImageFromBlob(files[0]);
+        let src = cv.imread(firstImg);
+        
+        let totalW = src.cols;
+        let totalH = src.rows;
+
+        // 🔥 [절대 좌표 설정] 스킬 아이콘 3개가 있는 '정확한 구역'만 오려내기
+        // Y축: 화면 위에서부터 56% 지점에서 시작해서 약 11%의 높이만큼만 자릅니다.
+        let cropY = Math.floor(totalH * 0.56); 
+        let cropHeight = Math.floor(totalH * 0.11); 
+
+        // X축: 화면 왼쪽 10% 지점에서 시작해서 너비 42% 만큼만 자릅니다. (오른쪽 펫 3마리 구역 제외)
+        let cropX = Math.floor(totalW * 0.10);
+        let cropWidth = Math.floor(totalW * 0.42); 
+
+        // 지정한 좌표로 사각형(Rect) 영역을 만들어 AI의 시야를 좁힙니다.
+        let rect = new cv.Rect(cropX, cropY, cropWidth, cropHeight);
+        let croppedSrc = src.roi(rect);
+
+        let gray = new cv.Mat();
+        cv.cvtColor(croppedSrc, gray, cv.COLOR_RGBA2GRAY, 0);
+
+        let detected = [];
+        const THRESHOLD = 0.70; 
+        const scales = [0.8, 0.9, 1.0, 1.1, 1.2]; // 다중 크기 탐색
+
+        for (let scale of scales) {
+            let scaledGray = new cv.Mat();
+            let newSize = new cv.Size(Math.floor(gray.cols * scale), Math.floor(gray.rows * scale));
+            cv.resize(gray, scaledGray, newSize, 0, 0, cv.INTER_LINEAR);
 
             for (let temp of templatesDB) {
+                if (temp.mat.rows > scaledGray.rows || temp.mat.cols > scaledGray.cols) continue;
+
                 let dst = new cv.Mat();
                 let mask = new cv.Mat();
+                cv.matchTemplate(scaledGray, temp.mat, dst, cv.TM_CCOEFF_NORMED, mask);
                 
-                // 템플릿 매칭 수행
-                cv.matchTemplate(gray, temp.mat, dst, cv.TM_CCOEFF_NORMED, mask);
-                
-                // 🔥 [수정] 여러 위치에서 발견될 수 있도록 최댓값 위치를 반복 탐색
                 for (let y = 0; y < dst.rows; y++) {
                     for (let x = 0; x < dst.cols; x++) {
                         let val = dst.floatPtr(y, x)[0];
                         if (val >= THRESHOLD) {
-                            detected.push({ name: temp.name, tier: temp.tier, x: x, y: y, conf: val });
+                            let originalX = Math.floor(x / scale);
+                            detected.push({ name: temp.name, x: originalX, conf: val });
                         }
                     }
                 }
                 dst.delete(); mask.delete();
             }
-            src.delete(); gray.delete();
-
-            // 🔥 [수정] 중복 인식된 스킬들을 정리 (점수 높은 순으로 3개만)
-            detected.sort((a, b) => b.conf - a.conf);
-            let finalSkills = [];
-            for (let d of detected) {
-                if (!finalSkills.some(f => Math.abs(f.x - d.x) < 40 && Math.abs(f.y - d.y) < 40)) {
-                    finalSkills.push(d);
-                    if (finalSkills.length === 3) break;
-                }
-            }
-            
-            // X좌표 기준으로 왼쪽부터 순서대로 배치
-            finalSkills.sort((a, b) => a.x - b.x); 
-            
-            if(finalSkills[0]) document.getElementById(playerKey + 'Skill1').value = finalSkills[0].name;
-            if(finalSkills[1]) document.getElementById(playerKey + 'Skill2').value = finalSkills[1].name;
-            if(finalSkills[2]) document.getElementById(playerKey + 'Skill3').value = finalSkills[2].name;
-
-            console.log(`[성공] 최종 인식된 스킬:`, finalSkills);
-
-        } catch (e) { 
-            console.error("[스킬 분석 에러]:", e);
+            scaledGray.delete();
         }
-    }
-    parsedData[playerKey].stats = {}; 
-try {
-            statusEl.innerText = `⏳ AI가 스킬을 정밀 분석 중...`;
-            
-            const firstImg = await createImageFromBlob(files[0]);
-            let src = cv.imread(firstImg);
-            
-            // 🔥 [핵심 개선] 스킬바가 있는 화면 하단 부분만 크롭 (속도 향상 및 오탐 방지)
-            // 게임 UI에 맞게 cropY_start와 cropHeight 비율을 조절하세요. (현재는 아래쪽 40%만 봄)
-            let cropY_start = Math.floor(src.rows * 0.60);
-            let cropHeight = src.rows - cropY_start;
-            let rect = new cv.Rect(0, cropY_start, src.cols, cropHeight);
-            let croppedSrc = src.roi(rect);
+        src.delete(); croppedSrc.delete(); gray.delete();
 
-            let gray = new cv.Mat();
-            cv.cvtColor(croppedSrc, gray, cv.COLOR_RGBA2GRAY, 0);
-
-            // 🔥 타겟 이미지도 윤곽선(Edge) 추출
-            let targetEdges = new cv.Mat();
-            cv.Canny(gray, targetEdges, 50, 150, 3, false);
-
-            let detected = [];
-            const THRESHOLD = 0.45; // Edge 매칭은 픽셀 일치도가 낮게 나오므로 임계값을 0.4~0.5 정도로 낮춥니다.
-
-            // 🔥 [핵심 개선] 다중 스케일(Multi-Scale) 탐색
-            // 해상도가 다를 경우를 대비해 스크린샷 크기를 80% ~ 120% 로 변경하며 스캔
-            const scales = [0.8, 0.9, 1.0, 1.1, 1.2];
-
-            for (let scale of scales) {
-                let scaledEdges = new cv.Mat();
-                let newSize = new cv.Size(Math.floor(targetEdges.cols * scale), Math.floor(targetEdges.rows * scale));
-                cv.resize(targetEdges, scaledEdges, newSize, 0, 0, cv.INTER_LINEAR);
-
-                for (let temp of templatesDB) {
-                    // 템플릿 이미지가 타겟 이미지보다 크면 매칭 에러 발생하므로 예외 처리
-                    if (temp.mat.rows > scaledEdges.rows || temp.mat.cols > scaledEdges.cols) continue;
-
-                    let dst = new cv.Mat();
-                    let mask = new cv.Mat();
-                    
-                    cv.matchTemplate(scaledEdges, temp.mat, dst, cv.TM_CCOEFF_NORMED, mask);
-                    
-                    for (let y = 0; y < dst.rows; y++) {
-                        for (let x = 0; x < dst.cols; x++) {
-                            let val = dst.floatPtr(y, x)[0];
-                            if (val >= THRESHOLD) {
-                                // 원본 스케일 대비 원래 좌표로 복원
-                                let originalX = Math.floor(x / scale);
-                                let originalY = Math.floor(y / scale) + cropY_start; // 크롭된 높이 다시 더함
-                                detected.push({ name: temp.name, tier: temp.tier, x: originalX, y: originalY, conf: val });
-                            }
-                        }
+        // 🔥 [핵심] X좌표를 기준으로 3개의 슬롯을 그룹화하고, 각 슬롯에서 가장 점수가 높은 스킬 하나만 뽑음
+        let slots = [];
+        for (let d of detected) {
+            let addedToSlot = false;
+            for (let s of slots) {
+                // X좌표가 50픽셀 이내면 같은 스킬칸으로 간주
+                if (Math.abs(s.x - d.x) < 50) { 
+                    if (d.conf > s.conf) {
+                        s.name = d.name;
+                        s.conf = d.conf;
                     }
-                    dst.delete(); mask.delete();
-                }
-                scaledEdges.delete();
-            }
-
-            src.delete(); croppedSrc.delete(); gray.delete(); targetEdges.delete();
-
-            // 중복 인식된 스킬 정리 (거리 40 이내면 같은 스킬로 취급)
-            detected.sort((a, b) => b.conf - a.conf);
-            let finalSkills = [];
-            for (let d of detected) {
-                if (!finalSkills.some(f => Math.abs(f.x - d.x) < 40 && Math.abs(f.y - d.y) < 40)) {
-                    finalSkills.push(d);
-                    if (finalSkills.length === 3) break;
+                    addedToSlot = true;
+                    break;
                 }
             }
-            
-            // X좌표 기준으로 왼쪽부터 순서대로 배치
-            finalSkills.sort((a, b) => a.x - b.x); 
-            
-            if(finalSkills[0]) document.getElementById(playerKey + 'Skill1').value = finalSkills[0].name;
-            if(finalSkills[1]) document.getElementById(playerKey + 'Skill2').value = finalSkills[1].name;
-            if(finalSkills[2]) document.getElementById(playerKey + 'Skill3').value = finalSkills[2].name;
-
-            console.log(`[성공] 최종 인식된 스킬:`, finalSkills);
-
-        } catch (e) { 
-            console.error("[스킬 분석 에러]:", e);
+            if (!addedToSlot) {
+                slots.push({ x: d.x, name: d.name, conf: d.conf });
+            }
         }
-}
 
+        // X좌표 기준으로 오름차순 (왼쪽부터 오른쪽 순서)
+        slots.sort((a, b) => a.x - b.x);
+        
+        if(slots[0]) document.getElementById(playerKey + 'Skill1').value = slots[0].name;
+        if(slots[1]) document.getElementById(playerKey + 'Skill2').value = slots[1].name;
+        if(slots[2]) document.getElementById(playerKey + 'Skill3').value = slots[2].name;
+        console.log(`[성공] 최종 스킬:`, slots);
+
+       // ==========================
+        // 2. 텍스트 옵션 읽기 (OCR)
+        // ==========================
+        parsedData[playerKey].stats = {}; 
+        for (let i = 0; i < files.length; i++) {
+            const imgForOcr = await createImageFromBlob(files[i]);
+            const canvas = document.createElement('canvas');
+            
+            // 🔥 [절대 좌표 설정] 스킬칸 바로 아래 텍스트 구역만 오려내기
+            // 스킬칸이 끝나는 67% 지점부터 시작하여, 텍스트가 있는 약 22% 높이만큼만 자릅니다.
+            const startY = imgForOcr.height * 0.67; 
+            const cropHeightForOcr = imgForOcr.height * 0.22;
+            
+            // 해상도를 1.5배로 키워 작은 글씨를 AI가 더 잘 읽게 만듭니다.
+            canvas.width = imgForOcr.width * 1.5; 
+            canvas.height = cropHeightForOcr * 1.5;
+            const ctx = canvas.getContext('2d');
+            
+            // 흑백 처리 및 대비(Contrast)를 1.5배로 올려 텍스트를 훨씬 뚜렷하게 만듦
+            ctx.filter = 'grayscale(1) contrast(1.5)'; 
+            ctx.drawImage(imgForOcr, 0, startY, imgForOcr.width, cropHeightForOcr, 0, 0, canvas.width, canvas.height);
+            
+            const processedUrl = canvas.toDataURL('image/jpeg', 1.0);
+            const { data: { text } } = await Tesseract.recognize(processedUrl, 'kor+eng');
+            
+            // 텍스트 정제 및 추출
+            const cleanText = text.replace(/\s+/g, '');
+            const regex = /([+-]?)(\d+[\.,]?\d*)[^a-zA-Z가-힣0-9]*([a-zA-Z가-힣]+)/g;
+            let match;
+            
+            while ((match = regex.exec(cleanText)) !== null) {
+                let value = parseFloat(match[2].replace(',', '.'));
+                if (match[1] === '-') value = -value;
+                if (Math.abs(value) > 30000) continue; // 비정상적으로 큰 숫자(노이즈) 스킵
+
+                const statName = normalizeStatName(match[3]);
+                if (statName) parsedData[playerKey].stats[statName] = value;
+            }
+        }
+        
+        renderOptionList(parsedData[playerKey].stats, listId);
+        
+        // 타이머 종료 및 완료 메시지
+        clearInterval(timerInterval);
+        let totalSec = Math.floor((Date.now() - startTime) / 1000);
+        statusEl.innerText = `✅ 스캔 완료! (${totalSec}초 소요)`;
+        statusEl.style.color = "#4ade80";
+
+    } catch (e) {
+        clearInterval(timerInterval);
+        console.error("[치명적 에러]:", e);
+        statusEl.innerText = "❌ 스캔 중 오류가 발생했습니다. (콘솔 창 확인)";
+        statusEl.style.color = "#ff4b4b";
+    }
+}
 function createImageFromBlob(file) {
     return new Promise((resolve) => {
         let img = new Image();
