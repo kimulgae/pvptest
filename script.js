@@ -131,7 +131,7 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
     document.getElementById(playerKey + 'Skill2').value = "None";
     document.getElementById(playerKey + 'Skill3').value = "None";
     document.getElementById(playerKey + 'Ascension').value = "0";
-    document.getElementById(listId).innerHTML = ""; // 기존 옵션 텍스트 지우기
+    document.getElementById(listId).innerHTML = ""; 
 
     if (!cvReady || templatesDB.length === 0) {
         statusEl.innerText = "⚠️ AI 엔진 미준비 (텍스트 옵션만 스캔합니다)";
@@ -146,16 +146,15 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
     }, 1000);
 
     try {
-       // ==========================
-        // 1. 스킬 아이콘 매칭 (OpenCV)
+        // ==========================
+        // 1. 고속 스킬 아이콘 매칭 (OpenCV)
         // ==========================
         const firstImg = await createImageFromBlob(files[0]);
         let src = cv.imread(firstImg);
         
-        // 🔥 [개선] 너무 좁게 자르지 않고, 화면의 절반(50%) 아래를 통째로 스캔합니다.
-        // (펫 이미지는 템플릿에 없으므로 AI가 알아서 무시합니다)
-        let cropY_start = Math.floor(src.rows * 0.50);
-        let cropHeight = src.rows - cropY_start;
+        // 장비창을 제외하고 스킬과 펫이 위치한 황금 구역(55% ~ 72%)만 정밀 크롭
+        let cropY_start = Math.floor(src.rows * 0.55);
+        let cropHeight = Math.floor(src.rows * 0.17);
         let rect = new cv.Rect(0, cropY_start, src.cols, cropHeight);
         let croppedSrc = src.roi(rect);
 
@@ -163,9 +162,8 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
         cv.cvtColor(croppedSrc, gray, cv.COLOR_RGBA2GRAY, 0);
 
         let detected = [];
-        // 🔥 [개선] 임계값을 조금 낮춰서 스크린샷 화질이 약간 깨져도 잘 잡게 합니다.
         const THRESHOLD = 0.65; 
-        const scales = [0.8, 0.9, 1.0, 1.1, 1.2]; 
+        const scales = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2]; // 스케일 스펙트럼 확장
 
         for (let scale of scales) {
             let scaledGray = new cv.Mat();
@@ -179,13 +177,27 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
                 let mask = new cv.Mat();
                 cv.matchTemplate(scaledGray, temp.mat, dst, cv.TM_CCOEFF_NORMED, mask);
                 
-                for (let y = 0; y < dst.rows; y++) {
-                    for (let x = 0; x < dst.cols; x++) {
-                        let val = dst.floatPtr(y, x)[0];
-                        if (val >= THRESHOLD) {
-                            let originalX = Math.floor(x / scale);
-                            detected.push({ name: temp.name, x: originalX, conf: val });
+                // 🔥 [대폭 개선] 대량의 픽셀 루프 대신 고속 minMaxLoc 순회 알고리즘 적용
+                for (let m = 0; m < 3; m++) {
+                    let minMax = cv.minMaxLoc(dst);
+                    if (minMax.maxVal >= THRESHOLD) {
+                        let originalX = Math.floor(minMax.maxLoc.x / scale);
+                        // 화면 우측의 펫(가로 52% 이후 영역)은 스킬칸이 아니므로 원천 배제
+                        if (originalX < src.cols * 0.52) {
+                            detected.push({ name: temp.name, x: originalX, conf: minMax.maxVal });
                         }
+                        
+                        // 이미 찾은 피크 주변을 지워 중복 검출 방지
+                        let startX = Math.max(0, minMax.maxLoc.x - temp.mat.cols / 2);
+                        let startY = Math.max(0, minMax.maxLoc.y - temp.mat.rows / 2);
+                        let w = Math.min(dst.cols - startX, temp.mat.cols);
+                        let h = Math.min(dst.rows - startY, temp.mat.rows);
+                        let eraseRect = new cv.Rect(startX, startY, w, h);
+                        let roi = dst.roi(eraseRect);
+                        roi.setTo(new cv.Scalar(0));
+                        roi.delete();
+                    } else {
+                        break;
                     }
                 }
                 dst.delete(); mask.delete();
@@ -194,13 +206,12 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
         }
         src.delete(); croppedSrc.delete(); gray.delete();
 
-        // X좌표 기준 클러스터링 (같은 칸에 있는 중복 스킬 제거)
+        // X좌표 기준 근접 영역 클러스터링
         let slots = [];
         for (let d of detected) {
             let addedToSlot = false;
             for (let s of slots) {
-                // X좌표가 50픽셀 이내면 같은 스킬칸으로 간주
-                if (Math.abs(s.x - d.x) < 50) { 
+                if (Math.abs(s.x - d.x) < 45) { 
                     if (d.conf > s.conf) {
                         s.name = d.name;
                         s.conf = d.conf;
@@ -214,14 +225,14 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
             }
         }
 
-        // X좌표 오름차순 정렬 후 앞에서부터 3개만 자름 (혹시라도 펫과 겹쳤을 때를 대비해 왼쪽 3개만 사용)
+        // 왼쪽부터 순서대로 정렬 후 상위 3개 자동 선택
         slots.sort((a, b) => a.x - b.x);
         let finalSkills = slots.slice(0, 3);
         
         if(finalSkills[0]) document.getElementById(playerKey + 'Skill1').value = finalSkills[0].name;
         if(finalSkills[1]) document.getElementById(playerKey + 'Skill2').value = finalSkills[1].name;
         if(finalSkills[2]) document.getElementById(playerKey + 'Skill3').value = finalSkills[2].name;
-        console.log(`[성공] 최종 스킬:`, finalSkills);
+        console.log(`[오픈CV 성공] 추출된 스킬 목록:`, finalSkills);
 
         // ==========================
         // 2. 텍스트 옵션 읽기 (OCR)
@@ -231,38 +242,66 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
             const imgForOcr = await createImageFromBlob(files[i]);
             const canvas = document.createElement('canvas');
             
-            // 🔥 [개선] 텍스트가 잘리지 않게 화면의 60% 지점부터 맨 아래까지 넓게 잡습니다.
-            const startY = imgForOcr.height * 0.60; 
-            const cropHeightForOcr = imgForOcr.height - startY; 
+            // 스킬칸 바로 아래부터 화면 하단 버튼 전(66% ~ 90%)까지 오려내기
+            const startY = imgForOcr.height * 0.66; 
+            const cropHeightForOcr = imgForOcr.height * 0.24; 
             
             canvas.width = imgForOcr.width * 1.5; 
             canvas.height = cropHeightForOcr * 1.5;
             const ctx = canvas.getContext('2d');
             
-            // 🔥 [개선] 대비를 1.5에서 1.2로 다시 낮춥니다. (대비가 너무 강하면 얇은 한국어 획이 날아가서 인식을 못 합니다)
             ctx.filter = 'grayscale(1) contrast(1.2)'; 
             ctx.drawImage(imgForOcr, 0, startY, imgForOcr.width, cropHeightForOcr, 0, 0, canvas.width, canvas.height);
             
             const processedUrl = canvas.toDataURL('image/jpeg', 1.0);
             const { data: { text } } = await Tesseract.recognize(processedUrl, 'kor+eng');
-            
-            const cleanText = text.replace(/\s+/g, '');
-            const regex = /([+-]?)(\d+[\.,]?\d*)[^a-zA-Z가-힣0-9]*([a-zA-Z가-힣]+)/g;
-            let match;
-            
-            while ((match = regex.exec(cleanText)) !== null) {
-                let value = parseFloat(match[2].replace(',', '.'));
-                if (match[1] === '-') value = -value;
-                if (Math.abs(value) > 30000) continue;
+            console.log(`[OCR 내부 원본 수집]:\n`, text);
 
-                const statName = normalizeStatName(match[3]);
-                if (statName) parsedData[playerKey].stats[statName] = value;
+            // 🔥 [대폭 개선] 오작동이 심한 연쇄 정규식 대신 줄바꿈 단위 키워드 분석법 도입
+            const lines = text.split('\n');
+            for (let line of lines) {
+                let cleanLine = line.replace(/\s+/g, '');
+                
+                // 줄 내부에 포함된 숫자 부동소수점 매칭
+                let numMatch = cleanLine.match(/([+-]?\d+[\.,]?\d*)/);
+                if (!numMatch) continue;
+                let value = parseFloat(numMatch[1].replace(',', '.'));
+                
+                let statName = null;
+                // OCR 오타(클록, 왁률, 옵수 등) 방어 코드 탑재 완료
+                if (cleanLine.includes("치명") || cleanLine.includes("지명") || cleanLine.includes("명타")) {
+                    statName = (cleanLine.includes("피해") || cleanLine.includes("피애") || cleanLine.includes("파해")) ? "치명타 피해" : "치명타 확률";
+                } else if (cleanLine.includes("블록") || cleanLine.includes("블럭") || cleanLine.includes("클록") || cleanLine.includes("플록") || cleanLine.includes("확률") || cleanLine.includes("왁률") || cleanLine.includes("학률")) {
+                    statName = "블록 확률";
+                } else if (cleanLine.includes("흡수") || cleanLine.includes("생명") || cleanLine.includes("흡슈") || cleanLine.includes("옵수") || cleanLine.includes("힙수")) {
+                    statName = "생명력 흡수";
+                } else if (cleanLine.includes("더블") || cleanLine.includes("떠블") || cleanLine.includes("찬스") || cleanLine.includes("잔스")) {
+                    statName = "더블 찬스";
+                } else if (cleanLine.includes("속도") || cleanLine.includes("공격") || cleanLine.includes("격속")) {
+                    statName = "공격 속도";
+                } else if (cleanLine.includes("대기") || cleanLine.includes("재사용") || cleanLine.includes("시간")) {
+                    statName = "스킬 재사용 대기시간";
+                } else if (cleanLine.includes("근접") || cleanLine.includes("건접")) {
+                    statName = "근접 피해";
+                } else if (cleanLine.includes("원거리")) {
+                    statName = "원거리 피해";
+                } else if (cleanLine.includes("스킬") || cleanLine.includes("스길")) {
+                    statName = "스킬 피해";
+                } else if (cleanLine.includes("체력") || cleanLine.includes("채력") || cleanLine.includes("최력")) {
+                    statName = "체력";
+                } else if (cleanLine.includes("피해") || cleanLine.includes("피애") || cleanLine.includes("파해")) {
+                    statName = "피해";
+                }
+                
+                if (statName && !isNaN(value) && Math.abs(value) < 30000) {
+                    parsedData[playerKey].stats[statName] = value;
+                }
             }
         }
         
         renderOptionList(parsedData[playerKey].stats, listId);
         
-        // 타이머 종료 및 완료 메시지
+        // 타이머 정지 및 마감
         clearInterval(timerInterval);
         let totalSec = Math.floor((Date.now() - startTime) / 1000);
         statusEl.innerText = `✅ 스캔 완료! (${totalSec}초 소요)`;
@@ -270,8 +309,8 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
 
     } catch (e) {
         clearInterval(timerInterval);
-        console.error("[치명적 에러]:", e);
-        statusEl.innerText = "❌ 스캔 중 오류가 발생했습니다. (콘솔 창 확인)";
+        console.error("[인식 엔진 치명적 에러]:", e);
+        statusEl.innerText = "❌ 스캔 오류 발생. 대상을 다시 확인해 주세요.";
         statusEl.style.color = "#ff4b4b";
     }
 }
