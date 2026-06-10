@@ -53,15 +53,20 @@ function loadTemplates() {
                     canvas.height = img.height;
                     let ctx = canvas.getContext('2d');
                     
-                    // 🔥 [비기 1] 배경을 '새하얀 색'으로 칠해 검은색 스킬 선의 대비를 극대화!
-                    ctx.fillStyle = "#ffffff"; 
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    // 배경 채색 없이 그대로 그림
                     ctx.drawImage(img, 0, 0);
 
                     let mat = cv.imread(canvas);
-                    cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
+                    let gray = new cv.Mat();
+                    cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY, 0);
+                    
+                    // 🔥 [핵심 개선] Canny Edge 알고리즘으로 윤곽선만 추출!
+                    let edges = new cv.Mat();
+                    cv.Canny(gray, edges, 50, 150, 3, false);
 
-                    templatesDB.push({ name: skill, tier: tier.val, mat: mat });
+                    templatesDB.push({ name: skill, tier: tier.val, mat: edges }); // edges 매트릭스 저장
+                    
+                    mat.delete(); gray.delete();
                     successCount++;
                 } catch(e) {
                     console.error(`[변환 에러] ${path} 실패:`, e);
@@ -78,7 +83,6 @@ function loadTemplates() {
         }
     }, 2000); 
 }
-
 const SKILL_DB = {
     "Meat": { type: "buff", dmgBonus: 0, hpBonus: 0.0001, duration: 10, count: 7.5 },
     "Arrows": { type: "dmg", power: 0.0002, cooldown: 7, count: 8.57 },
@@ -189,55 +193,87 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
         }
     }
     parsedData[playerKey].stats = {}; 
-    try {
-        for (let i = 0; i < files.length; i++) {
-            statusEl.innerText = `⏳ ${i + 1}/${files.length}번째 이미지 텍스트 옵션 스캔 중...`;
+try {
+            statusEl.innerText = `⏳ AI가 스킬을 정밀 분석 중...`;
             
-            const imgForOcr = await createImageFromBlob(files[i]);
-            const canvas = document.createElement('canvas');
+            const firstImg = await createImageFromBlob(files[0]);
+            let src = cv.imread(firstImg);
             
-            // 🔥 [비기 2] 이미지 크롭 (Crop): 텍스트가 있는 아래쪽 55%만 잘라내어 AI 시선 집중!
-            const startY = imgForOcr.height * 0.45; 
-            const cropHeight = imgForOcr.height * 0.55;
-            
-            canvas.width = imgForOcr.width * 1.5; 
-            canvas.height = cropHeight * 1.5;
-            const ctx = canvas.getContext('2d');
-            
-            // 흑백 + 약간의 대비 향상
-            ctx.filter = 'grayscale(1) contrast(1.2)'; 
-            ctx.drawImage(
-                imgForOcr, 
-                0, startY, imgForOcr.width, cropHeight, // 원본에서 자를 위치
-                0, 0, canvas.width, canvas.height       // 캔버스에 그릴 위치
-            );
-            
-            const processedUrl = canvas.toDataURL('image/jpeg', 1.0);
-            const { data: { text } } = await Tesseract.recognize(processedUrl, 'kor+eng');
-            
-            console.log(`[OCR 원본 텍스트 - 파일 ${i+1}]\n`, text);
+            // 🔥 [핵심 개선] 스킬바가 있는 화면 하단 부분만 크롭 (속도 향상 및 오탐 방지)
+            // 게임 UI에 맞게 cropY_start와 cropHeight 비율을 조절하세요. (현재는 아래쪽 40%만 봄)
+            let cropY_start = Math.floor(src.rows * 0.60);
+            let cropHeight = src.rows - cropY_start;
+            let rect = new cv.Rect(0, cropY_start, src.cols, cropHeight);
+            let croppedSrc = src.roi(rect);
 
-            const cleanText = text.replace(/\s+/g, '');
-            const regex = /([+-]?)(\d+[\.,]?\d*)[^a-zA-Z가-힣0-9]*([a-zA-Z가-힣]+)/g;
-            let match;
-            
-            while ((match = regex.exec(cleanText)) !== null) {
-                let value = parseFloat(match[2].replace(',', '.'));
-                if (match[1] === '-') value = -value;
-                if (Math.abs(value) > 30000) continue;
+            let gray = new cv.Mat();
+            cv.cvtColor(croppedSrc, gray, cv.COLOR_RGBA2GRAY, 0);
 
-                const statName = normalizeStatName(match[3]);
-                if (statName) parsedData[playerKey].stats[statName] = value;
+            // 🔥 타겟 이미지도 윤곽선(Edge) 추출
+            let targetEdges = new cv.Mat();
+            cv.Canny(gray, targetEdges, 50, 150, 3, false);
+
+            let detected = [];
+            const THRESHOLD = 0.45; // Edge 매칭은 픽셀 일치도가 낮게 나오므로 임계값을 0.4~0.5 정도로 낮춥니다.
+
+            // 🔥 [핵심 개선] 다중 스케일(Multi-Scale) 탐색
+            // 해상도가 다를 경우를 대비해 스크린샷 크기를 80% ~ 120% 로 변경하며 스캔
+            const scales = [0.8, 0.9, 1.0, 1.1, 1.2];
+
+            for (let scale of scales) {
+                let scaledEdges = new cv.Mat();
+                let newSize = new cv.Size(Math.floor(targetEdges.cols * scale), Math.floor(targetEdges.rows * scale));
+                cv.resize(targetEdges, scaledEdges, newSize, 0, 0, cv.INTER_LINEAR);
+
+                for (let temp of templatesDB) {
+                    // 템플릿 이미지가 타겟 이미지보다 크면 매칭 에러 발생하므로 예외 처리
+                    if (temp.mat.rows > scaledEdges.rows || temp.mat.cols > scaledEdges.cols) continue;
+
+                    let dst = new cv.Mat();
+                    let mask = new cv.Mat();
+                    
+                    cv.matchTemplate(scaledEdges, temp.mat, dst, cv.TM_CCOEFF_NORMED, mask);
+                    
+                    for (let y = 0; y < dst.rows; y++) {
+                        for (let x = 0; x < dst.cols; x++) {
+                            let val = dst.floatPtr(y, x)[0];
+                            if (val >= THRESHOLD) {
+                                // 원본 스케일 대비 원래 좌표로 복원
+                                let originalX = Math.floor(x / scale);
+                                let originalY = Math.floor(y / scale) + cropY_start; // 크롭된 높이 다시 더함
+                                detected.push({ name: temp.name, tier: temp.tier, x: originalX, y: originalY, conf: val });
+                            }
+                        }
+                    }
+                    dst.delete(); mask.delete();
+                }
+                scaledEdges.delete();
             }
-        }
-        
-        renderOptionList(parsedData[playerKey].stats, listId);
-        statusEl.innerText = `✅ 분석 완료! 결과를 확인하세요.`;
-        statusEl.style.color = "#4ade80";
 
-    } catch (e) {
-        console.error("[치명적 에러] Tesseract 스캔 중 에러:", e);
-    }
+            src.delete(); croppedSrc.delete(); gray.delete(); targetEdges.delete();
+
+            // 중복 인식된 스킬 정리 (거리 40 이내면 같은 스킬로 취급)
+            detected.sort((a, b) => b.conf - a.conf);
+            let finalSkills = [];
+            for (let d of detected) {
+                if (!finalSkills.some(f => Math.abs(f.x - d.x) < 40 && Math.abs(f.y - d.y) < 40)) {
+                    finalSkills.push(d);
+                    if (finalSkills.length === 3) break;
+                }
+            }
+            
+            // X좌표 기준으로 왼쪽부터 순서대로 배치
+            finalSkills.sort((a, b) => a.x - b.x); 
+            
+            if(finalSkills[0]) document.getElementById(playerKey + 'Skill1').value = finalSkills[0].name;
+            if(finalSkills[1]) document.getElementById(playerKey + 'Skill2').value = finalSkills[1].name;
+            if(finalSkills[2]) document.getElementById(playerKey + 'Skill3').value = finalSkills[2].name;
+
+            console.log(`[성공] 최종 인식된 스킬:`, finalSkills);
+
+        } catch (e) { 
+            console.error("[스킬 분석 에러]:", e);
+        }
 }
 
 function createImageFromBlob(file) {
