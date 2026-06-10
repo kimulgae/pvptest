@@ -52,19 +52,19 @@ function loadTemplates() {
                     canvas.width = img.width;
                     canvas.height = img.height;
                     let ctx = canvas.getContext('2d');
+                    
+                    // 배경을 하얗게 채워 흑백 대비 최적화 (테두리 노이즈 제거용)
+                    ctx.fillStyle = "#ffffff"; 
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
                     ctx.drawImage(img, 0, 0);
 
                     let mat = cv.imread(canvas);
                     let gray = new cv.Mat();
                     cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY, 0);
 
-                    // 🔥 [핵심] 배경색을 무시하기 위해 템플릿의 윤곽선(Edge)만 추출하여 저장
-                    let edges = new cv.Mat();
-                    cv.Canny(gray, edges, 50, 150, 3, false);
-
-                    templatesDB.push({ name: skill, tier: tier.val, mat: edges });
+                    templatesDB.push({ name: skill, tier: tier.val, mat: gray });
                     
-                    mat.delete(); gray.delete();
+                    mat.delete();
                     successCount++;
                 } catch(e) {
                     console.error(`[변환 에러] ${path} 실패:`, e);
@@ -81,6 +81,7 @@ function loadTemplates() {
         }
     }, 2000); 
 }
+
 const SKILL_DB = {
     "Meat": { type: "buff", dmgBonus: 0, hpBonus: 0.0001, duration: 10, count: 7.5 },
     "Arrows": { type: "dmg", power: 0.0002, cooldown: 7, count: 8.57 },
@@ -138,7 +139,6 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
         return;
     }
 
-    // ⏱️ 초 단위 타이머 시작
     let startTime = Date.now();
     let timerInterval = setInterval(() => {
         let sec = Math.floor((Date.now() - startTime) / 1000);
@@ -147,12 +147,11 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
 
     try {
         // ==========================
-        // 1. 고속 스킬 아이콘 매칭 (OpenCV 윤곽선 매칭)
+        // 1. 고속 스킬 아이콘 매칭 (중복 스킬 방지 알고리즘 탑재)
         // ==========================
         const firstImg = await createImageFromBlob(files[0]);
         let src = cv.imread(firstImg);
         
-        // 스킬과 펫이 위치한 구역(55% ~ 72%) 크롭
         let cropY_start = Math.floor(src.rows * 0.55);
         let cropHeight = Math.floor(src.rows * 0.17);
         let rect = new cv.Rect(0, cropY_start, src.cols, cropHeight);
@@ -161,37 +160,30 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
         let gray = new cv.Mat();
         cv.cvtColor(croppedSrc, gray, cv.COLOR_RGBA2GRAY, 0);
 
-        // 🔥 [핵심] 원본 이미지도 윤곽선으로 변환 (배경색 영향 0%)
-        let targetEdges = new cv.Mat();
-        cv.Canny(gray, targetEdges, 50, 150, 3, false);
-
         let detected = [];
-        const THRESHOLD = 0.40; // 윤곽선 매칭 특성상 기준치를 0.40으로 조정할 때 가장 정확합니다.
+        const THRESHOLD = 0.55; // 안정적인 흑백 매칭 기준치
         const scales = [0.8, 0.9, 1.0, 1.1, 1.2]; 
 
         for (let scale of scales) {
-            let scaledEdges = new cv.Mat();
-            let newSize = new cv.Size(Math.floor(targetEdges.cols * scale), Math.floor(targetEdges.rows * scale));
-            cv.resize(targetEdges, scaledEdges, newSize, 0, 0, cv.INTER_LINEAR);
+            let scaledGray = new cv.Mat();
+            let newSize = new cv.Size(Math.floor(gray.cols * scale), Math.floor(gray.rows * scale));
+            cv.resize(gray, scaledGray, newSize, 0, 0, cv.INTER_LINEAR);
 
             for (let temp of templatesDB) {
-                if (temp.mat.rows > scaledEdges.rows || temp.mat.cols > scaledEdges.cols) continue;
+                if (temp.mat.rows > scaledGray.rows || temp.mat.cols > scaledGray.cols) continue;
 
                 let dst = new cv.Mat();
                 let mask = new cv.Mat();
-                cv.matchTemplate(scaledEdges, temp.mat, dst, cv.TM_CCOEFF_NORMED, mask);
+                cv.matchTemplate(scaledGray, temp.mat, dst, cv.TM_CCOEFF_NORMED, mask);
                 
                 for (let m = 0; m < 3; m++) {
                     let minMax = cv.minMaxLoc(dst);
                     if (minMax.maxVal >= THRESHOLD) {
                         let originalX = Math.floor(minMax.maxLoc.x / scale);
-                        
-                        // 화면 우측의 펫(가로 50% 이후 영역) 제거 필터링
-                        if (originalX < src.cols * 0.50) {
+                        if (originalX < src.cols * 0.50) { // 화면 우측 펫 영역 스킵
                             detected.push({ name: temp.name, x: originalX, conf: minMax.maxVal });
                         }
                         
-                        // 탐색 완료된 위치 지우기 (인식 지점 마스킹 지름 확대)
                         let startX = Math.max(0, minMax.maxLoc.x - 15);
                         let startY = Math.max(0, minMax.maxLoc.y - 15);
                         let w = Math.min(dst.cols - startX, temp.mat.cols + 30);
@@ -206,63 +198,68 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
                 }
                 dst.delete(); mask.delete();
             }
-            scaledEdges.delete();
+            scaledGray.delete();
         }
-        src.delete(); croppedSrc.delete(); gray.delete(); targetEdges.delete();
+        src.delete(); croppedSrc.delete(); gray.delete();
 
-        // X좌표 기준 중복 제거
-        let slots = [];
+        // X좌표 기준 그룹화 (3개의 슬롯 만들기)
+        let slotMap = [];
         for (let d of detected) {
-            let addedToSlot = false;
-            for (let s of slots) {
-                if (Math.abs(s.x - d.x) < 50) { 
-                    if (d.conf > s.conf) {
-                        s.name = d.name;
-                        s.conf = d.conf;
-                    }
-                    addedToSlot = true;
+            let added = false;
+            for (let slot of slotMap) {
+                if (Math.abs(slot[0].x - d.x) < 40) { 
+                    slot.push(d);
+                    added = true;
                     break;
                 }
             }
-            if (!addedToSlot) {
-                slots.push({ x: d.x, name: d.name, conf: d.conf });
+            if (!added) slotMap.push([d]);
+        }
+
+        // 왼쪽부터 정렬 후 상위 3개 슬롯만 확보
+        slotMap.sort((a, b) => a[0].x - b[0].x);
+        let finalSlots = slotMap.slice(0, 3);
+        
+        // 🔒 "절대 3개가 같을 수 없다" - 중복 배제 로직
+        let usedSkills = new Set();
+        let finalSkills = ["None", "None", "None"];
+
+        for (let i = 0; i < finalSlots.length; i++) {
+            finalSlots[i].sort((a, b) => b.conf - a.conf); // 점수 높은 순 정렬
+            for (let candidate of finalSlots[i]) {
+                if (!usedSkills.has(candidate.name)) {
+                    finalSkills[i] = candidate.name;
+                    usedSkills.add(candidate.name); // 사용된 스킬 목록에 추가
+                    break;
+                }
             }
         }
 
-        slots.sort((a, b) => a.x - b.x);
-        let finalSkills = slots.slice(0, 3);
-        
-        if(finalSkills[0]) document.getElementById(playerKey + 'Skill1').value = finalSkills[0].name;
-        if(finalSkills[1]) document.getElementById(playerKey + 'Skill2').value = finalSkills[1].name;
-        if(finalSkills[2]) document.getElementById(playerKey + 'Skill3').value = finalSkills[2].name;
+        document.getElementById(playerKey + 'Skill1').value = finalSkills[0];
+        document.getElementById(playerKey + 'Skill2').value = finalSkills[1];
+        document.getElementById(playerKey + 'Skill3').value = finalSkills[2];
 
         // ==========================
-        // 2. 텍스트 옵션 읽기 (OpenCV 이진화 처리 적용)
+        // 2. 텍스트 옵션 읽기 (첫 줄 잘림 현상 방지)
         // ==========================
         parsedData[playerKey].stats = {}; 
         for (let i = 0; i < files.length; i++) {
-            let ocrSrc = cv.imread(await createImageFromBlob(files[i]));
+            const imgForOcr = await createImageFromBlob(files[i]);
+            const canvas = document.createElement('canvas');
             
-            // 옵션 글씨가 위치한 영역 크롭 (66% ~ 90%)
-            let startY = Math.floor(ocrSrc.rows * 0.66);
-            let cropHeightForOcr = Math.floor(ocrSrc.rows * 0.24);
-            let ocrRect = new cv.Rect(0, startY, ocrSrc.cols, cropHeightForOcr);
-            let ocrCropped = ocrSrc.roi(ocrRect);
+            // 시작 높이를 63%로 올려서 첫 줄 글씨를 완벽히 확보
+            const startY = imgForOcr.height * 0.63; 
+            const cropHeightForOcr = imgForOcr.height * 0.27; 
             
-            let ocrGray = new cv.Mat();
-            cv.cvtColor(ocrCropped, ocrGray, cv.COLOR_RGBA2GRAY, 0);
+            canvas.width = imgForOcr.width * 2; 
+            canvas.height = cropHeightForOcr * 2;
+            const ctx = canvas.getContext('2d');
             
-            // 🔥 [핵심] OpenCV Otsu 알고리즘으로 회색 글씨를 선명한 흑백 글씨로 강제 교정
-            let ocrThresh = new cv.Mat();
-            cv.threshold(ocrGray, ocrThresh, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU);
+            // 캔버스 필터를 이용해 자연스럽게 가독성 강화
+            ctx.filter = 'grayscale(1) contrast(1.5) brightness(1.1)'; 
+            ctx.drawImage(imgForOcr, 0, startY, imgForOcr.width, cropHeightForOcr, 0, 0, canvas.width, canvas.height);
             
-            let ocrCanvas = document.createElement('canvas');
-            cv.imshow(ocrCanvas, ocrThresh);
-            const processedUrl = ocrCanvas.toDataURL('image/jpeg', 1.0);
-            
-            // 메모리 해제
-            ocrSrc.delete(); ocrCropped.delete(); ocrGray.delete(); ocrThresh.delete();
-
+            const processedUrl = canvas.toDataURL('image/jpeg', 1.0);
             const { data: { text } } = await Tesseract.recognize(processedUrl, 'kor+eng');
             console.log(`[OCR 보정본 텍스트]:\n`, text);
 
@@ -293,7 +290,7 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
                     statName = "원거리 피해";
                 } else if (cleanLine.includes("스킬") || cleanLine.includes("스길")) {
                     statName = "스킬 피해";
-                } else if (cleanLine.includes("재생") || cleanLine.includes("제생")) { // 🔥 체력보다 무조건 먼저 검사하도록 순서 정렬
+                } else if (cleanLine.includes("재생") || cleanLine.includes("제생")) { 
                     statName = "체력 재생";
                 } else if (cleanLine.includes("체력") || cleanLine.includes("채력") || cleanLine.includes("최력")) {
                     statName = "체력";
@@ -309,7 +306,6 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
         
         renderOptionList(parsedData[playerKey].stats, listId);
         
-        // 타이머 정지 및 완료
         clearInterval(timerInterval);
         let totalSec = Math.floor((Date.now() - startTime) / 1000);
         statusEl.innerText = `✅ 스캔 완료! (${totalSec}초 소요)`;
@@ -322,6 +318,7 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
         statusEl.style.color = "#ff4b4b";
     }
 }
+
 function createImageFromBlob(file) {
     return new Promise((resolve) => {
         let img = new Image();
