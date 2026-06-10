@@ -1,6 +1,7 @@
 const parsedData = { my: { stats: {} }, enemy: { stats: {} } };
 let cvReady = false;
 let templatesDB = []; 
+let path = `templates/${tier.folder}/${tier.prefix}${skill}.png`;
 
 const SKILL_NAMES = ["Meat", "Arrows", "Shout", "Berserk", "Cannon", "Shuriken", "Buff", "ArrowRains", "Thorns", "Bomb", "Meteorite", "Morale", "Lightning", "Stampede", "Worm", "Drone", "HigherMorale", "StrafeRun"];
 const TIERS = [
