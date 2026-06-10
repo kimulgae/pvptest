@@ -1,7 +1,6 @@
 const parsedData = { my: { stats: {} }, enemy: { stats: {} } };
 let cvReady = false;
 let templatesDB = []; 
-let path = `templates/${tier.folder}/${tier.prefix}${skill}.png`;
 
 const SKILL_NAMES = ["Meat", "Arrows", "Shout", "Berserk", "Cannon", "Shuriken", "Buff", "ArrowRains", "Thorns", "Bomb", "Meteorite", "Morale", "Lightning", "Stampede", "Worm", "Drone", "HigherMorale", "StrafeRun"];
 const TIERS = [
@@ -43,7 +42,10 @@ function loadTemplates() {
     TIERS.forEach(tier => {
         SKILL_NAMES.forEach(skill => {
             let img = new Image();
+            // 외부 이미지(깃허브 호스팅)를 가져올 때 발생하는 CORS 보안 에러를 방지합니다.
             img.crossOrigin = "Anonymous"; 
+            
+            // 🔥 유저님의 깃허브 폴더 구조를 정확히 찾아가는 상대 경로입니다!
             let path = `templates/${tier.folder}/${tier.prefix}${skill}.png`;
             img.src = path;
 
@@ -54,7 +56,7 @@ function loadTemplates() {
                     canvas.height = img.height;
                     let ctx = canvas.getContext('2d');
                     
-                    // 배경을 하얗게 채워 흑백 대비 최적화 (테두리 노이즈 제거용)
+                    // 배경을 하얗게 채워 흑백 대비를 최적화하고 테두리 노이즈를 방지합니다.
                     ctx.fillStyle = "#ffffff"; 
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
                     ctx.drawImage(img, 0, 0);
@@ -63,6 +65,7 @@ function loadTemplates() {
                     let gray = new cv.Mat();
                     cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY, 0);
 
+                    // 스킬 매칭을 위해 흑백 변환된 이미지를 데이터베이스에 저장합니다.
                     templatesDB.push({ name: skill, tier: tier.val, mat: gray });
                     
                     mat.delete();
