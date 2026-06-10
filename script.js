@@ -152,28 +152,20 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
         const firstImg = await createImageFromBlob(files[0]);
         let src = cv.imread(firstImg);
         
-        let totalW = src.cols;
-        let totalH = src.rows;
-
-        // 🔥 [절대 좌표 설정] 스킬 아이콘 3개가 있는 '정확한 구역'만 오려내기
-        // Y축: 화면 위에서부터 56% 지점에서 시작해서 약 11%의 높이만큼만 자릅니다.
-        let cropY = Math.floor(totalH * 0.56); 
-        let cropHeight = Math.floor(totalH * 0.11); 
-
-        // X축: 화면 왼쪽 10% 지점에서 시작해서 너비 42% 만큼만 자릅니다. (오른쪽 펫 3마리 구역 제외)
-        let cropX = Math.floor(totalW * 0.10);
-        let cropWidth = Math.floor(totalW * 0.42); 
-
-        // 지정한 좌표로 사각형(Rect) 영역을 만들어 AI의 시야를 좁힙니다.
-        let rect = new cv.Rect(cropX, cropY, cropWidth, cropHeight);
+        // 🔥 [개선] 너무 좁게 자르지 않고, 화면의 절반(50%) 아래를 통째로 스캔합니다.
+        // (펫 이미지는 템플릿에 없으므로 AI가 알아서 무시합니다)
+        let cropY_start = Math.floor(src.rows * 0.50);
+        let cropHeight = src.rows - cropY_start;
+        let rect = new cv.Rect(0, cropY_start, src.cols, cropHeight);
         let croppedSrc = src.roi(rect);
 
         let gray = new cv.Mat();
         cv.cvtColor(croppedSrc, gray, cv.COLOR_RGBA2GRAY, 0);
 
         let detected = [];
-        const THRESHOLD = 0.70; 
-        const scales = [0.8, 0.9, 1.0, 1.1, 1.2]; // 다중 크기 탐색
+        // 🔥 [개선] 임계값을 조금 낮춰서 스크린샷 화질이 약간 깨져도 잘 잡게 합니다.
+        const THRESHOLD = 0.65; 
+        const scales = [0.8, 0.9, 1.0, 1.1, 1.2]; 
 
         for (let scale of scales) {
             let scaledGray = new cv.Mat();
@@ -202,7 +194,7 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
         }
         src.delete(); croppedSrc.delete(); gray.delete();
 
-        // 🔥 [핵심] X좌표를 기준으로 3개의 슬롯을 그룹화하고, 각 슬롯에서 가장 점수가 높은 스킬 하나만 뽑음
+        // X좌표 기준 클러스터링 (같은 칸에 있는 중복 스킬 제거)
         let slots = [];
         for (let d of detected) {
             let addedToSlot = false;
@@ -222,15 +214,16 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
             }
         }
 
-        // X좌표 기준으로 오름차순 (왼쪽부터 오른쪽 순서)
+        // X좌표 오름차순 정렬 후 앞에서부터 3개만 자름 (혹시라도 펫과 겹쳤을 때를 대비해 왼쪽 3개만 사용)
         slots.sort((a, b) => a.x - b.x);
+        let finalSkills = slots.slice(0, 3);
         
-        if(slots[0]) document.getElementById(playerKey + 'Skill1').value = slots[0].name;
-        if(slots[1]) document.getElementById(playerKey + 'Skill2').value = slots[1].name;
-        if(slots[2]) document.getElementById(playerKey + 'Skill3').value = slots[2].name;
-        console.log(`[성공] 최종 스킬:`, slots);
+        if(finalSkills[0]) document.getElementById(playerKey + 'Skill1').value = finalSkills[0].name;
+        if(finalSkills[1]) document.getElementById(playerKey + 'Skill2').value = finalSkills[1].name;
+        if(finalSkills[2]) document.getElementById(playerKey + 'Skill3').value = finalSkills[2].name;
+        console.log(`[성공] 최종 스킬:`, finalSkills);
 
-       // ==========================
+        // ==========================
         // 2. 텍스트 옵션 읽기 (OCR)
         // ==========================
         parsedData[playerKey].stats = {}; 
@@ -238,24 +231,21 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
             const imgForOcr = await createImageFromBlob(files[i]);
             const canvas = document.createElement('canvas');
             
-            // 🔥 [절대 좌표 설정] 스킬칸 바로 아래 텍스트 구역만 오려내기
-            // 스킬칸이 끝나는 67% 지점부터 시작하여, 텍스트가 있는 약 22% 높이만큼만 자릅니다.
-            const startY = imgForOcr.height * 0.67; 
-            const cropHeightForOcr = imgForOcr.height * 0.22;
+            // 🔥 [개선] 텍스트가 잘리지 않게 화면의 60% 지점부터 맨 아래까지 넓게 잡습니다.
+            const startY = imgForOcr.height * 0.60; 
+            const cropHeightForOcr = imgForOcr.height - startY; 
             
-            // 해상도를 1.5배로 키워 작은 글씨를 AI가 더 잘 읽게 만듭니다.
             canvas.width = imgForOcr.width * 1.5; 
             canvas.height = cropHeightForOcr * 1.5;
             const ctx = canvas.getContext('2d');
             
-            // 흑백 처리 및 대비(Contrast)를 1.5배로 올려 텍스트를 훨씬 뚜렷하게 만듦
-            ctx.filter = 'grayscale(1) contrast(1.5)'; 
+            // 🔥 [개선] 대비를 1.5에서 1.2로 다시 낮춥니다. (대비가 너무 강하면 얇은 한국어 획이 날아가서 인식을 못 합니다)
+            ctx.filter = 'grayscale(1) contrast(1.2)'; 
             ctx.drawImage(imgForOcr, 0, startY, imgForOcr.width, cropHeightForOcr, 0, 0, canvas.width, canvas.height);
             
             const processedUrl = canvas.toDataURL('image/jpeg', 1.0);
             const { data: { text } } = await Tesseract.recognize(processedUrl, 'kor+eng');
             
-            // 텍스트 정제 및 추출
             const cleanText = text.replace(/\s+/g, '');
             const regex = /([+-]?)(\d+[\.,]?\d*)[^a-zA-Z가-힣0-9]*([a-zA-Z가-힣]+)/g;
             let match;
@@ -263,7 +253,7 @@ async function processImages(fileInputId, statusId, listId, playerKey) {
             while ((match = regex.exec(cleanText)) !== null) {
                 let value = parseFloat(match[2].replace(',', '.'));
                 if (match[1] === '-') value = -value;
-                if (Math.abs(value) > 30000) continue; // 비정상적으로 큰 숫자(노이즈) 스킵
+                if (Math.abs(value) > 30000) continue;
 
                 const statName = normalizeStatName(match[3]);
                 if (statName) parsedData[playerKey].stats[statName] = value;
