@@ -11,7 +11,7 @@
 <body>
     <div class="container">
         <h1>⚔️ PVP 승률 예측기</h1>
-        <p class="subtitle">기본 스탯을 입력하고, 스크린샷을 올려 스킬과 옵션을 한 번에 스캔하세요!</p>
+        <p class="subtitle">AI 기반 스킬 및 옵션 분리 인식 엔진 적용</p>
         
         <div id="ai-status" style="color: #f9a826; font-weight: bold; margin-bottom: 20px; font-size: 15px;">
             ⏳ 인공지능 시각 엔진(OpenCV)을 불러오는 중입니다...
@@ -30,7 +30,6 @@
                             <option value="m">M</option>
                             <option value="b" selected>B</option>
                             <option value="t">T</option>
-                            <option value="q">Q</option>
                         </select>
                     </div>
                     <div class="input-row">
@@ -42,13 +41,12 @@
                             <option value="m">M</option>
                             <option value="b" selected>B</option>
                             <option value="t">T</option>
-                            <option value="q">Q</option>
                         </select>
                     </div>
                 </div>
 
                 <div class="skill-slots-container">
-                    <label>장착 스킬 (스캔 시 자동 입력)</label>
+                    <label class="title">장착 스킬 세팅</label>
                     <div class="skill-slots">
                         <div class="skill-item"><select id="mySkill1"></select></div>
                         <div class="skill-item"><select id="mySkill2"></select></div>
@@ -63,12 +61,20 @@
                             <option value="3">승천 3단계</option>
                         </select>
                     </div>
+                    <div class="upload-box">
+                        <label class="scan-label">📸 스킬 전용 스캔 (1장)</label>
+                        <input type="file" id="mySkillImage" accept="image/*">
+                        <p class="status" id="mySkillStatus">스킬바가 포함된 화면 1장을 올려주세요.</p>
+                    </div>
                 </div>
 
                 <hr class="divider">
-                <label class="scan-label">📸 스크린샷 스캔 (여러 장 가능)</label>
-                <input type="file" id="myImage" accept="image/*" multiple>
-                <p class="status" id="myStatus">스킬바와 옵션이 포함된 화면을 올려주세요.</p>
+                
+                <div class="upload-box" style="border-color: #4ade80;">
+                    <label class="scan-label">📄 스탯 옵션 전용 스캔 (여러 장 가능)</label>
+                    <input type="file" id="myStatImage" accept="image/*" multiple>
+                    <p class="status" id="myStatStatus">캐릭터 스탯창 화면을 올려주세요.</p>
+                </div>
                 <div id="myOptionList" class="option-list"></div>
             </div>
 
@@ -84,7 +90,6 @@
                             <option value="m">M</option>
                             <option value="b" selected>B</option>
                             <option value="t">T</option>
-                            <option value="q">Q</option>
                         </select>
                     </div>
                     <div class="input-row">
@@ -96,13 +101,12 @@
                             <option value="m">M</option>
                             <option value="b" selected>B</option>
                             <option value="t">T</option>
-                            <option value="q">Q</option>
                         </select>
                     </div>
                 </div>
 
                 <div class="skill-slots-container">
-                    <label>장착 스킬 (스캔 시 자동 입력)</label>
+                    <label class="title">장착 스킬 세팅</label>
                     <div class="skill-slots">
                         <div class="skill-item"><select id="enemySkill1"></select></div>
                         <div class="skill-item"><select id="enemySkill2"></select></div>
@@ -117,12 +121,20 @@
                             <option value="3">승천 3단계</option>
                         </select>
                     </div>
+                    <div class="upload-box">
+                        <label class="scan-label">📸 스킬 전용 스캔 (1장)</label>
+                        <input type="file" id="enemySkillImage" accept="image/*">
+                        <p class="status" id="enemySkillStatus">스킬바가 포함된 화면 1장을 올려주세요.</p>
+                    </div>
                 </div>
 
                 <hr class="divider">
-                <label class="scan-label">📸 스크린샷 스캔 (여러 장 가능)</label>
-                <input type="file" id="enemyImage" accept="image/*" multiple>
-                <p class="status" id="enemyStatus">스킬바와 옵션이 포함된 화면을 올려주세요.</p>
+                
+                <div class="upload-box" style="border-color: #ff4b4b;">
+                    <label class="scan-label">📄 스탯 옵션 전용 스캔 (여러 장 가능)</label>
+                    <input type="file" id="enemyStatImage" accept="image/*" multiple>
+                    <p class="status" id="enemyStatStatus">캐릭터 스탯창 화면을 올려주세요.</p>
+                </div>
                 <div id="enemyOptionList" class="option-list"></div>
             </div>
         </div>
@@ -132,7 +144,7 @@
         <div class="result-section">
             <h2 id="resultText">예상 승률: - %</h2>
             <div class="progress-bar"><div id="winRateFill" class="progress-fill"></div></div>
-            <p id="feedbackText" class="feedback">스탯과 스크린샷을 올리고 계산을 눌러주세요.</p>
+            <p id="feedbackText" class="feedback">데이터를 세팅하고 계산을 눌러주세요.</p>
         </div>
     </div>
     
