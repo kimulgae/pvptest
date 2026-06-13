@@ -1,5 +1,4 @@
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
-
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Pretendard', sans-serif; }
 body { background-color: #12121c; color: #ffffff; display: flex; justify-content: center; padding: 40px 15px; overflow-x: hidden; }
 .container { max-width: 1000px; width: 100%; text-align: center; }
@@ -19,21 +18,21 @@ h1 { color: #f9a826; font-size: 32px; margin-bottom: 8px; }
 .input-row input { flex: 1; min-width: 0; width: 100%; background: #161622; color: #fff; border: 1px solid #33334d; padding: 10px; border-radius: 8px; font-size: 14px; outline: none; }
 .input-row select { flex-shrink: 0; width: 75px; background: #2a2a40; color: #4ade80; border: 1px solid #33334d; padding: 10px 4px; border-radius: 8px; font-weight: bold; outline: none; cursor: pointer; font-size: 14px; text-align: center; }
 
-.skill-slots-container { margin-bottom: 10px; text-align: left; margin-top: 15px; width: 100%; }
-.skill-slots-container label { color: #f9a826; font-size: 14.5px; font-weight: 600; display: block; margin-bottom: 10px; }
+.skill-slots-container { margin-bottom: 10px; text-align: left; margin-top: 15px; width: 100%; background: #1a1a24; padding: 15px; border-radius: 8px; border: 1px solid #2a2a40; }
+.skill-slots-container label.title { color: #f9a826; font-size: 14.5px; font-weight: 600; display: block; margin-bottom: 10px; }
 .skill-slots { display: flex; gap: 8px; margin-bottom: 10px; width: 100%; }
 .skill-item { display: flex; flex-direction: column; flex: 1 1 0; min-width: 0; }
 .skill-item select { width: 100%; background: #2a2a40; color: #4ade80; border: 1px solid #33334d; padding: 10px 2px; border-radius: 8px; font-weight: bold; outline: none; cursor: pointer; font-size: 13px; text-align: center; appearance: none; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
 
-.ascension-slot { display: flex; align-items: center; justify-content: space-between; background: #161622; padding: 10px 15px; border-radius: 8px; border: 1px solid #33334d; gap: 10px; width: 100%; }
+.ascension-slot { display: flex; align-items: center; justify-content: space-between; background: #161622; padding: 10px 15px; border-radius: 8px; border: 1px solid #33334d; gap: 10px; width: 100%; margin-bottom: 15px; }
 .ascension-slot label { margin-bottom: 0; color: #f9a826; font-size: 14.5px; white-space: nowrap; flex-shrink: 0; }
 .asc-select-full { flex: 1 1 auto; min-width: 0; background: #2a2a40; color: #f9a826; border: 1px solid #33334d; padding: 8px 12px; border-radius: 8px; font-weight: bold; outline: none; cursor: pointer; font-size: 14px; text-align: center; }
 
 .divider { border: 0; height: 1px; background: #2a2a40; margin: 20px 0; }
 .scan-label { display: block; color: #a0a0b0; font-size: 13px; margin-bottom: 8px; }
 
-input[type="file"] { margin-bottom: 15px; width: 100%; font-size: 13px; color: #a0a0b0; cursor: pointer; }
-.status { font-size: 13px; color: #f9a826; margin-bottom: 15px; text-align: left; word-break: keep-all; }
+input[type="file"] { margin-bottom: 5px; width: 100%; font-size: 13px; color: #a0a0b0; cursor: pointer; }
+.status { font-size: 13px; color: #f9a826; margin-bottom: 15px; text-align: left; word-break: keep-all; font-weight: 500; }
 
 .option-list { text-align: left; margin-top: 5px; }
 .simple-option-item { display: flex; justify-content: space-between; align-items: center; background: #2a2a40; padding: 10px 14px; border-radius: 8px; margin-bottom: 8px; font-size: 14.5px; border: 1px solid #33334d; }
@@ -46,6 +45,8 @@ input[type="file"] { margin-bottom: 15px; width: 100%; font-size: 13px; color: #
 .progress-fill { width: 50%; height: 100%; background: linear-gradient(90deg, #4ade80, #ff4b4b); transition: width 1s cubic-bezier(0.4, 0, 0.2, 1); }
 .feedback { color: #d0d0e0; font-size: 16px; line-height: 1.6; word-break: keep-all; }
 
+.upload-box { background: #161622; padding: 12px; border-radius: 8px; border: 1px dashed #33334d; margin-bottom: 10px; }
+
 @media (max-width: 768px) {
     body { padding: 20px 10px; }
     h1 { font-size: 26px; }
@@ -55,9 +56,6 @@ input[type="file"] { margin-bottom: 15px; width: 100%; font-size: 13px; color: #
     .input-row select { flex: 0 0 65px; font-size: 13px; padding: 8px 2px; }
     .skill-slots { gap: 5px; }
     .skill-item select { padding: 8px 0; font-size: 12px; }
-    .ascension-slot { padding: 10px; gap: 8px; flex-direction: column; align-items: flex-start; }
-    .asc-select-full { width: 100%; padding: 8px; font-size: 13.5px; }
     .calc-btn { font-size: 16px; padding: 15px 20px; }
     .result-section { padding: 20px 15px; }
-    .simple-option-item { font-size: 13.5px; padding: 8px 12px; }
 }
