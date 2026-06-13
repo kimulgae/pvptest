@@ -24,7 +24,7 @@ window.onOpenCvReady = function() {
 
 function checkOpenCvReady() {
     if (typeof cv !== 'undefined' && typeof cv.Mat === 'function') {
-        console.log("[시스템] OpenCV 내부 코어 완벽 부팅 확인!");
+        console.log("[시스템] OpenCV 부팅 완료");
         loadTemplates();
     } else {
         setTimeout(checkOpenCvReady, 200); 
@@ -34,53 +34,37 @@ function checkOpenCvReady() {
 function loadTemplates() {
     cvReady = true;
     const statusEl = document.getElementById('ai-status');
-    statusEl.innerText = "⏳ AI 엔진 부팅 완료! 스킬 아이콘을 학습하는 중...";
+    statusEl.innerText = "⏳ 스킬 템플릿 학습 중...";
     
     let successCount = 0;
-    let failCount = 0;
-
     TIERS.forEach(tier => {
         SKILL_NAMES.forEach(skill => {
             let img = new Image();
-            // 외부 이미지(깃허브 호스팅)를 가져올 때 발생하는 CORS 보안 에러를 방지합니다.
             img.crossOrigin = "Anonymous"; 
-            
-            // 🔥 유저님의 깃허브 폴더 구조를 정확히 찾아가는 상대 경로입니다!
-            let path = `templates/${tier.folder}/${tier.prefix}${skill}.png`;
-            img.src = path;
+            img.src = `templates/${tier.folder}/${tier.prefix}${skill}.png`;
 
             img.onload = () => {
                 try {
                     let canvas = document.createElement('canvas');
-                    canvas.width = img.width;
-                    canvas.height = img.height;
+                    canvas.width = img.width; canvas.height = img.height;
                     let ctx = canvas.getContext('2d');
-                    
-                    // 배경을 하얗게 채워 흑백 대비를 최적화하고 테두리 노이즈를 방지합니다.
                     ctx.fillStyle = "#ffffff"; 
                     ctx.fillRect(0, 0, canvas.width, canvas.height);
                     ctx.drawImage(img, 0, 0);
 
                     let mat = cv.imread(canvas);
-                    let gray = new cv.Mat();
-                    cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY, 0);
-
-                    // 스킬 매칭을 위해 흑백 변환된 이미지를 데이터베이스에 저장합니다.
-                    templatesDB.push({ name: skill, tier: tier.val, mat: gray });
-                    
-                    mat.delete();
+                    cv.cvtColor(mat, mat, cv.COLOR_RGBA2GRAY, 0);
+                    cv.threshold(mat, mat, 127, 255, cv.THRESH_BINARY_INV); // 엑스레이 필터
+                    templatesDB.push({ name: skill, tier: tier.val, mat: mat });
                     successCount++;
-                } catch(e) {
-                    console.error(`[변환 에러] ${path} 실패:`, e);
-                }
+                } catch(e) {}
             };
-            img.onerror = () => { failCount++; };
         });
     });
 
     setTimeout(() => {
         if (templatesDB.length > 0) {
-            statusEl.innerText = `✅ AI 엔진 장전 완료! (학습 완료: ${successCount}개)`;
+            statusEl.innerText = `✅ AI 엔진 듀얼 모드 준비 완료! (스킬 DB: ${successCount}개)`;
             statusEl.style.color = "#4ade80";
         }
     }, 2000); 
@@ -111,9 +95,9 @@ const ASCENSION_MULTIPLIERS = { 0: 1.0, 1: 49.0, 2: 2499.0, 3: 124999.0 };
 function normalizeStatName(rawName) {
     if (rawName.includes("총") || rawName.includes("대장간") || rawName.includes("레벨") || rawName.includes("도감") || rawName.includes("장착")) return null;
     if (rawName.includes("치명") || rawName.includes("지명") || rawName.includes("명타")) return (rawName.includes("피해") || rawName.includes("피애")) ? "치명타 피해" : "치명타 확률";
-    if (rawName.includes("확률") || rawName.includes("확럴") || rawName.includes("학률") || rawName.includes("블록") || rawName.includes("블럭") || rawName.includes("클록") || rawName.includes("플록")) return "블록 확률";
+    if (rawName.includes("확률") || rawName.includes("확럴") || rawName.includes("블록") || rawName.includes("블럭")) return "블록 확률";
     if (rawName.includes("흡수") || rawName.includes("생명") || rawName.includes("흡슈")) return "생명력 흡수";
-    if (rawName.includes("더블") || rawName.includes("떠블") || rawName.includes("찬스") || rawName.includes("단스")) return "더블 찬스";
+    if (rawName.includes("더블") || rawName.includes("떠블") || rawName.includes("찬스")) return "더블 찬스";
     if (rawName.includes("속도") || rawName.includes("속토") || rawName.includes("공격")) return "공격 속도";
     if (rawName.includes("대기") || rawName.includes("재사용") || rawName.includes("시간")) return "스킬 재사용 대기시간";
     if (rawName.includes("근접") || rawName.includes("건접")) return "근접 피해";
@@ -121,206 +105,8 @@ function normalizeStatName(rawName) {
     if (rawName.includes("스킬") || rawName.includes("스길")) return "스킬 피해";
     if (rawName.includes("재생") || rawName.includes("제생")) return "체력 재생";
     if (rawName.includes("체력") || rawName.includes("채력") || rawName.includes("최력") || rawName.includes("체럭")) return "체력";
-    if (rawName.includes("피해") || rawName.includes("피애") || rawName.includes("파해") || rawName.includes("피헤")) return "피해";
+    if (rawName.includes("피해") || rawName.includes("피애") || rawName.includes("파해")) return "피해";
     return null;
-}
-
-async function processImages(fileInputId, statusId, listId, playerKey) {
-    const files = document.getElementById(fileInputId).files;
-    if (files.length === 0) return;
-    
-    const statusEl = document.getElementById(statusId);
-    
-    // 리셋 로직
-    document.getElementById(playerKey + 'Skill1').value = "None";
-    document.getElementById(playerKey + 'Skill2').value = "None";
-    document.getElementById(playerKey + 'Skill3').value = "None";
-    document.getElementById(playerKey + 'Ascension').value = "0";
-    document.getElementById(listId).innerHTML = ""; 
-
-    if (!cvReady || templatesDB.length === 0) {
-        statusEl.innerText = "⚠️ AI 엔진 미준비 (텍스트 옵션만 스캔합니다)";
-        return;
-    }
-
-    let startTime = Date.now();
-    let timerInterval = setInterval(() => {
-        let sec = Math.floor((Date.now() - startTime) / 1000);
-        statusEl.innerText = `⏳ AI가 이미지를 분석하고 있습니다... (${sec}초 경과)`;
-    }, 1000);
-
-    try {
-        // ==========================
-        // 1. 고속 스킬 아이콘 매칭 (중복 스킬 방지 알고리즘 탑재)
-        // ==========================
-        const firstImg = await createImageFromBlob(files[0]);
-        let src = cv.imread(firstImg);
-        
-        let cropY_start = Math.floor(src.rows * 0.55);
-        let cropHeight = Math.floor(src.rows * 0.17);
-        let rect = new cv.Rect(0, cropY_start, src.cols, cropHeight);
-        let croppedSrc = src.roi(rect);
-
-        let gray = new cv.Mat();
-        cv.cvtColor(croppedSrc, gray, cv.COLOR_RGBA2GRAY, 0);
-
-        let detected = [];
-        const THRESHOLD = 0.55; // 안정적인 흑백 매칭 기준치
-        const scales = [0.8, 0.9, 1.0, 1.1, 1.2]; 
-
-        for (let scale of scales) {
-            let scaledGray = new cv.Mat();
-            let newSize = new cv.Size(Math.floor(gray.cols * scale), Math.floor(gray.rows * scale));
-            cv.resize(gray, scaledGray, newSize, 0, 0, cv.INTER_LINEAR);
-
-            for (let temp of templatesDB) {
-                if (temp.mat.rows > scaledGray.rows || temp.mat.cols > scaledGray.cols) continue;
-
-                let dst = new cv.Mat();
-                let mask = new cv.Mat();
-                cv.matchTemplate(scaledGray, temp.mat, dst, cv.TM_CCOEFF_NORMED, mask);
-                
-                for (let m = 0; m < 3; m++) {
-                    let minMax = cv.minMaxLoc(dst);
-                    if (minMax.maxVal >= THRESHOLD) {
-                        let originalX = Math.floor(minMax.maxLoc.x / scale);
-                        if (originalX < src.cols * 0.50) { // 화면 우측 펫 영역 스킵
-                            detected.push({ name: temp.name, x: originalX, conf: minMax.maxVal });
-                        }
-                        
-                        let startX = Math.max(0, minMax.maxLoc.x - 15);
-                        let startY = Math.max(0, minMax.maxLoc.y - 15);
-                        let w = Math.min(dst.cols - startX, temp.mat.cols + 30);
-                        let h = Math.min(dst.rows - startY, temp.mat.rows + 30);
-                        let eraseRect = new cv.Rect(startX, startY, w, h);
-                        let roi = dst.roi(eraseRect);
-                        roi.setTo(new cv.Scalar(0));
-                        roi.delete();
-                    } else {
-                        break;
-                    }
-                }
-                dst.delete(); mask.delete();
-            }
-            scaledGray.delete();
-        }
-        src.delete(); croppedSrc.delete(); gray.delete();
-
-        // X좌표 기준 그룹화 (3개의 슬롯 만들기)
-        let slotMap = [];
-        for (let d of detected) {
-            let added = false;
-            for (let slot of slotMap) {
-                if (Math.abs(slot[0].x - d.x) < 40) { 
-                    slot.push(d);
-                    added = true;
-                    break;
-                }
-            }
-            if (!added) slotMap.push([d]);
-        }
-
-        // 왼쪽부터 정렬 후 상위 3개 슬롯만 확보
-        slotMap.sort((a, b) => a[0].x - b[0].x);
-        let finalSlots = slotMap.slice(0, 3);
-        
-        // 🔒 "절대 3개가 같을 수 없다" - 중복 배제 로직
-        let usedSkills = new Set();
-        let finalSkills = ["None", "None", "None"];
-
-        for (let i = 0; i < finalSlots.length; i++) {
-            finalSlots[i].sort((a, b) => b.conf - a.conf); // 점수 높은 순 정렬
-            for (let candidate of finalSlots[i]) {
-                if (!usedSkills.has(candidate.name)) {
-                    finalSkills[i] = candidate.name;
-                    usedSkills.add(candidate.name); // 사용된 스킬 목록에 추가
-                    break;
-                }
-            }
-        }
-
-        document.getElementById(playerKey + 'Skill1').value = finalSkills[0];
-        document.getElementById(playerKey + 'Skill2').value = finalSkills[1];
-        document.getElementById(playerKey + 'Skill3').value = finalSkills[2];
-
-        // ==========================
-        // 2. 텍스트 옵션 읽기 (첫 줄 잘림 현상 방지)
-        // ==========================
-        parsedData[playerKey].stats = {}; 
-        for (let i = 0; i < files.length; i++) {
-            const imgForOcr = await createImageFromBlob(files[i]);
-            const canvas = document.createElement('canvas');
-            
-            // 시작 높이를 63%로 올려서 첫 줄 글씨를 완벽히 확보
-            const startY = imgForOcr.height * 0.63; 
-            const cropHeightForOcr = imgForOcr.height * 0.27; 
-            
-            canvas.width = imgForOcr.width * 2; 
-            canvas.height = cropHeightForOcr * 2;
-            const ctx = canvas.getContext('2d');
-            
-            // 캔버스 필터를 이용해 자연스럽게 가독성 강화
-            ctx.filter = 'grayscale(1) contrast(1.5) brightness(1.1)'; 
-            ctx.drawImage(imgForOcr, 0, startY, imgForOcr.width, cropHeightForOcr, 0, 0, canvas.width, canvas.height);
-            
-            const processedUrl = canvas.toDataURL('image/jpeg', 1.0);
-            const { data: { text } } = await Tesseract.recognize(processedUrl, 'kor+eng');
-            console.log(`[OCR 보정본 텍스트]:\n`, text);
-
-            const lines = text.split('\n');
-            for (let line of lines) {
-                let cleanLine = line.replace(/\s+/g, '');
-                
-                let numMatch = cleanLine.match(/([+-]?\d+[\.,]?\d*)/);
-                if (!numMatch) continue;
-                let value = parseFloat(numMatch[1].replace(',', '.'));
-                
-                let statName = null;
-                if (cleanLine.includes("대기") || cleanLine.includes("재사용") || cleanLine.includes("시간")) {
-                    statName = "스킬 재사용 대기시간";
-                } else if (cleanLine.includes("치명") || cleanLine.includes("지명") || cleanLine.includes("명타")) {
-                    statName = (cleanLine.includes("피해") || cleanLine.includes("피애") || cleanLine.includes("파해")) ? "치명타 피해" : "치명타 확률";
-                } else if (cleanLine.includes("블록") || cleanLine.includes("블럭") || cleanLine.includes("클록") || cleanLine.includes("플록") || cleanLine.includes("확률") || cleanLine.includes("왁률") || cleanLine.includes("학률")) {
-                    statName = "블록 확률";
-                } else if (cleanLine.includes("흡수") || cleanLine.includes("생명") || cleanLine.includes("흡슈") || cleanLine.includes("옵수") || cleanLine.includes("힙수")) {
-                    statName = "생명력 흡수";
-                } else if (cleanLine.includes("더블") || cleanLine.includes("떠블") || cleanLine.includes("찬스") || cleanLine.includes("잔스")) {
-                    statName = "더블 찬스";
-                } else if (cleanLine.includes("속도") || cleanLine.includes("공격") || cleanLine.includes("격속")) {
-                    statName = "공격 속도";
-                } else if (cleanLine.includes("근접") || cleanLine.includes("건접")) {
-                    statName = "근접 피해";
-                } else if (cleanLine.includes("원거리")) {
-                    statName = "원거리 피해";
-                } else if (cleanLine.includes("스킬") || cleanLine.includes("스길")) {
-                    statName = "스킬 피해";
-                } else if (cleanLine.includes("재생") || cleanLine.includes("제생")) { 
-                    statName = "체력 재생";
-                } else if (cleanLine.includes("체력") || cleanLine.includes("채력") || cleanLine.includes("최력")) {
-                    statName = "체력";
-                } else if (cleanLine.includes("피해") || cleanLine.includes("피애") || cleanLine.includes("파해")) {
-                    statName = "피해";
-                }
-                
-                if (statName && !isNaN(value) && Math.abs(value) < 30000) {
-                    parsedData[playerKey].stats[statName] = value;
-                }
-            }
-        }
-        
-        renderOptionList(parsedData[playerKey].stats, listId);
-        
-        clearInterval(timerInterval);
-        let totalSec = Math.floor((Date.now() - startTime) / 1000);
-        statusEl.innerText = `✅ 스캔 완료! (${totalSec}초 소요)`;
-        statusEl.style.color = "#4ade80";
-
-    } catch (e) {
-        clearInterval(timerInterval);
-        console.error("[인식 엔진 에러]:", e);
-        statusEl.innerText = "❌ 스캔 중 오류가 발생했습니다.";
-        statusEl.style.color = "#ff4b4b";
-    }
 }
 
 function createImageFromBlob(file) {
@@ -329,6 +115,149 @@ function createImageFromBlob(file) {
         img.src = URL.createObjectURL(file);
         img.onload = () => resolve(img);
     });
+}
+
+// ============================================
+// [기능 분리 1] 스킬 전용 OpenCV 분석 함수
+// ============================================
+async function processSkillImage(fileInputId, statusId, playerKey) {
+    const files = document.getElementById(fileInputId).files;
+    if (files.length === 0) return;
+    const statusEl = document.getElementById(statusId);
+    
+    document.getElementById(playerKey + 'Skill1').value = "None";
+    document.getElementById(playerKey + 'Skill2').value = "None";
+    document.getElementById(playerKey + 'Skill3').value = "None";
+    document.getElementById(playerKey + 'Ascension').value = "0";
+
+    if (!cvReady || templatesDB.length === 0) {
+        statusEl.innerText = "⚠️ OpenCV 엔진 미준비 상태입니다.";
+        return;
+    }
+
+    try {
+        statusEl.innerText = `⏳ OpenCV 스킬 탐색 중...`;
+        const firstImg = await createImageFromBlob(files[0]);
+        let src = cv.imread(firstImg);
+        
+        let h = src.rows; let w = src.cols;
+        let rect = new cv.Rect(0, Math.floor(h * 0.4), w, Math.floor(h * 0.6)); // 하단 60% 집중 스캔
+        let cropped = src.roi(rect);
+        let gray = new cv.Mat();
+        cv.cvtColor(cropped, gray, cv.COLOR_RGBA2GRAY, 0);
+        cv.threshold(gray, gray, 80, 255, cv.THRESH_BINARY_INV); // 엑스레이 필터
+
+        let detected = [];
+        let scales = [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]; 
+
+        for (let temp of templatesDB) {
+            for (let scale of scales) {
+                let dsize = new cv.Size(Math.round(temp.mat.cols * scale), Math.round(temp.mat.rows * scale));
+                if (dsize.width <= 0 || dsize.height <= 0 || dsize.width > gray.cols || dsize.height > gray.rows) continue;
+
+                let resizedTemp = new cv.Mat();
+                cv.resize(temp.mat, resizedTemp, dsize, 0, 0, cv.INTER_AREA);
+                
+                let dst = new cv.Mat();
+                let mask = new cv.Mat();
+                cv.matchTemplate(gray, resizedTemp, dst, cv.TM_CCOEFF_NORMED, mask);
+                
+                while (true) {
+                    let result = cv.minMaxLoc(dst);
+                    if (result.maxVal >= 0.55) {
+                        detected.push({ name: temp.name, tier: temp.tier, x: result.maxLoc.x, y: result.maxLoc.y, conf: result.maxVal });
+                        let rx = result.maxLoc.x; let ry = result.maxLoc.y;
+                        let rw = resizedTemp.cols; let rh = resizedTemp.rows;
+                        let pt1 = new cv.Point(Math.max(0, rx - Math.floor(rw/2)), Math.max(0, ry - Math.floor(rh/2)));
+                        let pt2 = new cv.Point(Math.min(dst.cols, rx + Math.floor(rw/2)), Math.min(dst.rows, ry + Math.floor(rh/2)));
+                        cv.rectangle(dst, pt1, pt2, new cv.Scalar(-100), -1);
+                    } else break;
+                }
+                dst.delete(); mask.delete(); resizedTemp.delete();
+            }
+        }
+        src.delete(); cropped.delete(); gray.delete();
+
+        detected.sort((a, b) => b.conf - a.conf); 
+        let finalSkills = [];
+        for (let d of detected) {
+            let overlap = false;
+            for (let f of finalSkills) {
+                if (Math.abs(d.x - f.x) < 50 && Math.abs(d.y - f.y) < 50) { overlap = true; break; }
+            }
+            if (!overlap) {
+                finalSkills.push(d);
+                if (finalSkills.length === 3) break; 
+            }
+        }
+        finalSkills.sort((a, b) => a.x - b.x); 
+        
+        if(finalSkills[0]) document.getElementById(playerKey + 'Skill1').value = finalSkills[0].name;
+        if(finalSkills[1]) document.getElementById(playerKey + 'Skill2').value = finalSkills[1].name;
+        if(finalSkills[2]) document.getElementById(playerKey + 'Skill3').value = finalSkills[2].name;
+
+        const tiers = finalSkills.map(s => s.tier);
+        if(tiers.includes("Apex")) document.getElementById(playerKey + 'Ascension').value = "3";
+        else if(tiers.includes("Mega")) document.getElementById(playerKey + 'Ascension').value = "1";
+        
+        statusEl.innerText = `✅ 스킬 인식 완료! (${finalSkills.length}개 발견)`;
+        statusEl.style.color = "#4ade80";
+    } catch (e) { 
+        console.error("[스킬 분석 에러]", e);
+        statusEl.innerText = "⚠️ 스킬 분석 실패";
+    }
+}
+
+// ============================================
+// [기능 분리 2] 스탯 텍스트 전용 Tesseract 분석 함수
+// ============================================
+async function processStatImage(fileInputId, statusId, listId, playerKey) {
+    const files = document.getElementById(fileInputId).files;
+    if (files.length === 0) return;
+    const statusEl = document.getElementById(statusId);
+
+    parsedData[playerKey].stats = {}; 
+    try {
+        for (let i = 0; i < files.length; i++) {
+            statusEl.innerText = `⏳ ${i + 1}/${files.length}번째 옵션 스캔 중 (Tesseract)...`;
+            
+            const imgForOcr = await createImageFromBlob(files[i]);
+            const canvas = document.createElement('canvas');
+            
+            const startY = imgForOcr.height * 0.45; // 스탯창 중간부터 크롭
+            const cropHeight = imgForOcr.height * 0.55;
+            
+            canvas.width = imgForOcr.width * 1.5; 
+            canvas.height = cropHeight * 1.5;
+            const ctx = canvas.getContext('2d');
+            
+            ctx.filter = 'grayscale(1) contrast(1.2)'; 
+            ctx.drawImage(imgForOcr, 0, startY, imgForOcr.width, cropHeight, 0, 0, canvas.width, canvas.height);
+            
+            const processedUrl = canvas.toDataURL('image/jpeg', 1.0);
+            const { data: { text } } = await Tesseract.recognize(processedUrl, 'kor+eng');
+            
+            const cleanText = text.replace(/\s+/g, '');
+            const regex = /([+-]?)(\d+[\.,]?\d*)[^a-zA-Z가-힣0-9]*([a-zA-Z가-힣]+)/g;
+            let match;
+            
+            while ((match = regex.exec(cleanText)) !== null) {
+                let value = parseFloat(match[2].replace(',', '.'));
+                if (match[1] === '-') value = -value;
+                if (Math.abs(value) > 30000) continue;
+
+                const statName = normalizeStatName(match[3]);
+                if (statName) parsedData[playerKey].stats[statName] = value;
+            }
+        }
+        
+        renderOptionList(parsedData[playerKey].stats, listId);
+        statusEl.innerText = `✅ 옵션 분석 완료!`;
+        statusEl.style.color = "#4ade80";
+    } catch (e) {
+        console.error("[Tesseract 에러]", e);
+        statusEl.innerText = "⚠️ 옵션 분석 실패";
+    }
 }
 
 function renderOptionList(stats, containerId) {
@@ -344,8 +273,11 @@ function renderOptionList(stats, containerId) {
     });
 }
 
+// ============================================
+// [로직 강화] 피해와 원피/근피 곱연산 분리 공식 적용
+// ============================================
 document.getElementById('calcBtn').addEventListener('click', () => {
-    const getMultiplier = (u) => ({'k': 1e3, 'm': 1e6, 'b': 1e9, 't': 1e12, 'q': 1e15}[u] || 1);
+    const getMultiplier = (u) => ({'k': 1e3, 'm': 1e6, 'b': 1e9, 't': 1e12}[u] || 1);
     const getVal = (v, u) => parseFloat(document.getElementById(v).value || 0) * getMultiplier(document.getElementById(u).value);
 
     const myBase = getVal('myDmgVal', 'myDmgUnit') * getVal('myHpVal', 'myHpUnit');
@@ -359,11 +291,17 @@ document.getElementById('calcBtn').addEventListener('click', () => {
     const calcEff = (stats, pKey) => {
         const getS = (k) => stats[k] / 100 || 0; 
         let multi = 1.0;
-        multi *= (1 + getS("피해") + getS("근접 피해") + getS("원거리 피해") + getS("스킬 피해"));
+        
+        // 🔥 곱연산 분리 적용: (1 + 피해) * (1 + 근피/원피/스킬피해)
+        let baseDmgBonus = getS("피해");
+        let conditionalDmgBonus = getS("근접 피해") + getS("원거리 피해") + getS("스킬 피해");
+        
+        multi *= (1 + baseDmgBonus);
+        multi *= (1 + conditionalDmgBonus); 
+
         multi *= (1 + getS("체력")); 
         multi *= (1 + getS("공격 속도"));
         multi *= (1 + getS("더블 찬스"));
-        
         multi *= (1 + (getS("치명타 확률") * (0.2 + getS("치명타 피해"))));
 
         const ascLevel = parseInt(document.getElementById(pKey + 'Ascension').value);
@@ -397,5 +335,8 @@ document.getElementById('calcBtn').addEventListener('click', () => {
     document.getElementById('feedbackText').innerHTML = feedback;
 });
 
-document.getElementById('myImage').addEventListener('change', () => processImages('myImage', 'myStatus', 'myOptionList', 'my'));
-document.getElementById('enemyImage').addEventListener('change', () => processImages('enemyImage', 'enemyStatus', 'enemyOptionList', 'enemy'));
+// 분리된 이벤트 리스너 할당
+document.getElementById('mySkillImage').addEventListener('change', () => processSkillImage('mySkillImage', 'mySkillStatus', 'my'));
+document.getElementById('myStatImage').addEventListener('change', () => processStatImage('myStatImage', 'myStatStatus', 'myOptionList', 'my'));
+document.getElementById('enemySkillImage').addEventListener('change', () => processSkillImage('enemySkillImage', 'enemySkillStatus', 'enemy'));
+document.getElementById('enemyStatImage').addEventListener('change', () => processStatImage('enemyStatImage', 'enemyStatStatus', 'enemyOptionList', 'enemy'));
